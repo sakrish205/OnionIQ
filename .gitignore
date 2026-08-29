@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.pdf
+settings.json
+gradcam_cache/
+models/
+yolo11n-seg.pt
+yolo11s-seg.pt
+.env
