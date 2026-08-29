@@ -14,8 +14,14 @@ from utils import DetectionEvent, is_in_overlap, setup_logging
 
 logger = setup_logging()
 
-# Lightweight default: ~5 MB, auto-downloaded by ultralytics on first use
 _DEFAULT_MODEL = "yolo11n-seg.pt"
+
+# Use GPU automatically if available
+try:
+    import torch
+    _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+except Exception:
+    _DEVICE = "cpu"
 
 
 class OnionModel:
@@ -43,10 +49,11 @@ class OnionModel:
 
         # 2. Auto-download and use yolo11n-seg.pt (real inference, detection-only)
         try:
-            self._model = YOLO(_DEFAULT_MODEL)   # ultralytics caches after first download
-            self._class_names = DEFAULT_CLASS_NAMES  # force "onion" label in detection-only mode
+            self._model = YOLO(_DEFAULT_MODEL)
+            self._model.to(_DEVICE)
+            self._class_names = DEFAULT_CLASS_NAMES
             self.using_mock = False
-            logger.info(f"Using default YOLO model ({_DEFAULT_MODEL}) in detection-only mode.")
+            logger.info(f"Using {_DEFAULT_MODEL} on {_DEVICE.upper()} (detection-only mode).")
             return
         except Exception as e:
             logger.warning(f"YOLO default model failed ({e}), falling back to MockYOLO.")
@@ -81,7 +88,8 @@ class OnionModel:
             results = self._model(frame)
         else:
             results = self._model(
-                frame, conf=conf, iou=iou, imgsz=imgsz, verbose=False
+                frame, conf=conf, iou=iou, imgsz=imgsz,
+                device=_DEVICE, verbose=False,
             )
 
         return self._parse(results, frame, cam_id, s)
