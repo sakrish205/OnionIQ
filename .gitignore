@@ -9,6 +9,11 @@ __pycache__/
 settings.json
 gradcam_cache/
 models/
+videos/
 yolo11n-seg.pt
 yolo11s-seg.pt
+*.pt
+*.engine
 .env
+test_result.txt
+onion_system.log

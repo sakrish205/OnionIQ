@@ -23,9 +23,6 @@ sys.path.insert(0, str(_PROJECT))
 
 from config import load_settings, save_settings, reset_settings, DB_PATH
 from database import OnionDatabase
-from grader import GradeDecisionEngine
-from matcher import CrossCameraMatcher
-from model_wrapper import OnionModel
 
 # ── UX4G semantic token palettes ──────────────────────────────────────────────
 THEMES = {
@@ -452,10 +449,10 @@ def _get_lock():
 @st.cache_resource
 def _get_state():
     return {
-        "running":False,"frame1":None,"frame2":None,
+        "running":False,"frame1":None,
         "fps":0.0,"active_tracks":0,"session_count":0,
         "stop_event":None,"thread":None,"error":None,
-        "source1":None,"source2":None,"cam1_open":False,"cam2_open":False,
+        "source1":None,
         "loading":False,"loading_msg":"",
         "frame_count":0,"total_frames":0,
         "reset_requested":False,
@@ -574,7 +571,6 @@ class _PipelineWorker(threading.Thread):
         self._db       = db
         self._stop     = stop_event
         self._batch_id = settings.get("_batch_id", "DEMO")
-        self._farmer   = settings.get("_farmer", "")
 
     def run(self):
         try:
@@ -629,7 +625,6 @@ class _PipelineWorker(threading.Thread):
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         with _lock:
-            _state["cam1_open"]    = True
             _state["total_frames"] = total_frames
             _state["frame_count"]  = 0
 
@@ -719,7 +714,7 @@ class _PipelineWorker(threading.Thread):
             cv2.putText(out, hud, (6, 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 0), 2)
 
-                with _lock:
+            with _lock:
                 _state["frame1"]        = out
                 _state["fps"]           = round(fps_val, 1)
                 _state["active_tracks"] = len(unique_ids)
@@ -740,7 +735,6 @@ def _start_pipeline(s1, s2, settings, db):
             "stop_event": stop, "running": True, "error": None,
             "loading": True, "loading_msg": "Loading model…",
             "source1": str(s1) if s1 else None,
-            "source2": str(s2) if s2 else None,
         })
         t = _PipelineWorker(s1, None, settings, db, stop)
         _state["thread"] = t; t.start()
@@ -823,8 +817,7 @@ st.set_page_config(
 )
 
 _defaults = {
-    "theme": "light", "batch_id": "DEMO001", "farmer_name": "",
-    "cam1_idx": "0", "cam2_enabled": False, "cam2_source": "1",
+    "theme": "light",
     "video_path": "", "source_type": "Video File",
 }
 for k, v in _defaults.items():
@@ -849,16 +842,12 @@ _now = time.time()
 _cache_stale = (
     "_db_cache_ts" not in st.session_state
     or _now - st.session_state._db_cache_ts > 2.0
-    or st.session_state.get("_cached_batch") != st.session_state.batch_id
 )
 if _cache_stale:
-    _bid = st.session_state.batch_id
-    st.session_state._db_cache_ts  = _now
-    st.session_state._cached_batch = _bid
-    st.session_state._db_summary   = db.get_batch_summary(_bid)
-    st.session_state._db_recent    = db.get_recent(n=200, batch_id=_bid)
-    st.session_state._db_disputed  = db.get_disputed(batch_id=_bid)
-    st.session_state._db_farmer = None
+    st.session_state._db_cache_ts = _now
+    st.session_state._db_summary  = db.get_batch_summary("DEMO")
+    st.session_state._db_recent   = db.get_recent(n=200, batch_id="DEMO")
+    st.session_state._db_disputed = db.get_disputed(batch_id="DEMO")
 
 
 
