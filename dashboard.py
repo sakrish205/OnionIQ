@@ -143,12 +143,6 @@ GRADE_DISPLAY = {
     "neck_rot":"Neck Rot","thrips_damage":"Thrips","sunscald":"Sunscald",
     "bruising":"Bruising","onion":"Detected","detected":"Detected",
 }
-GRADE_BGR = {
-    "grade_a":(34,137,18),"grade_b":(194,43,130),"grade_c":(0,104,164),
-    "reject":(45,55,219),"sprouting":(117,109,0),"rot":(22,26,138),
-    "thrips_damage":(0,78,173),"neck_rot":(0,28,125),"sunscald":(0,150,144),
-    "bruising":(90,55,120),"onion":(194,43,74),"detected":(194,43,74),
-}
 
 
 def _css(t: dict) -> str:
@@ -555,33 +549,6 @@ def _video_html(port: int, cam: int, label: str, h: int = 480) -> str:
     """
 
 
-def annotate_frame(frame, events, settings, cam_id, show_overlap=True):
-    out = frame.copy()
-    h, w = out.shape[:2]
-    if show_overlap:
-        ox1 = int(settings.get(f"overlap_start_cam{cam_id}_x", 900 if cam_id == 1 else 0))
-        ox2 = int(settings.get(f"overlap_end_cam{cam_id}_x",  1280 if cam_id == 1 else 380))
-        ov  = out.copy()
-        cv2.rectangle(ov, (ox1, 0), (ox2, h), (74, 43, 194), -1)
-        cv2.addWeighted(ov, 0.11, out, 0.89, 0, out)
-        cv2.line(out, (ox1, 0), (ox1, h), (74, 43, 194), 2)
-        cv2.line(out, (ox2, 0), (ox2, h), (74, 43, 194), 2)
-        cv2.putText(out, "OVERLAP", (ox1 + 4, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (74, 43, 194), 1)
-    for e in events:
-        if e.cam_id != cam_id:
-            continue
-        x1, y1, x2, y2 = [int(v) for v in e.bbox]
-        col = GRADE_BGR.get(e.class_name, (100, 100, 100))
-        cv2.rectangle(out, (x1, y1), (x2, y2), col, 2)
-        lbl = f"#{e.track_id} {GRADE_DISPLAY.get(e.class_name, e.class_name)} {e.confidence:.0%}"
-        (tw, th), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
-        cv2.rectangle(out, (x1, y1 - th - 7), (x1 + tw + 5, y1), col, -1)
-        cv2.putText(out, lbl, (x1 + 3, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1)
-    cv2.putText(out, f"CAM {cam_id}", (8, h - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 2)
-    return out
 
 
 _MIN_SIDE_PX   = 10
@@ -689,7 +656,6 @@ class _PipelineWorker(threading.Thread):
 
         # ── inference loop ────────────────────────────────────────────────────
         fc = 0; unique_ids = set(); t0 = time.time(); errors = 0
-        _db_t = time.time()
 
         while not self._stop.is_set():
             # Video loop reset (end of file)
@@ -753,15 +719,7 @@ class _PipelineWorker(threading.Thread):
             cv2.putText(out, hud, (6, 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 0), 2)
 
-            # throttle DB insert to every 2 s
-            now = time.time()
-            sc  = _state.get("session_count", 0)
-            if now - _db_t > 2.0:
-                _db_t = now
-                try: sc = self._db.get_batch_summary(self._batch_id).get("total", 0)
-                except Exception: pass
-
-            with _lock:
+                with _lock:
                 _state["frame1"]        = out
                 _state["fps"]           = round(fps_val, 1)
                 _state["active_tracks"] = len(unique_ids)
@@ -792,15 +750,20 @@ def _stop_pipeline():
     with _lock:
         s = _state.get("stop_event")
         if s: s.set()
+        _state["error"] = None
 
 
 def _restart_pipeline(s1, s2, settings, db):
     with _lock:
         s = _state.get("stop_event")
         if s: s.set()
+        old_thread = _state.get("thread")
         _state["running"] = False
         _state["frame1"]  = None
         _state["frame2"]  = None
+        _state["error"]   = None
+    if old_thread and old_thread.is_alive():
+        old_thread.join(timeout=2.0)
     _start_pipeline(s1, s2, settings, db)
 
 
@@ -970,23 +933,26 @@ with tab_live:
                  horizontal=True, label_visibility="collapsed", key="source_type")
         source_type = st.session_state.source_type
         if source_type == "Camera":
-            if st.button("Scan for Cameras", key="scan_btn", use_container_width=True):
-                found = []
-                with st.spinner("Scanning indices 0–4…"):
-                    for idx in range(5):
-                        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-                        if cap.isOpened():
-                            ret, _ = cap.read()
-                            if ret: found.append(idx)
-                        cap.release()
-                st.session_state["cam_scan"] = found
-            scan = st.session_state.get("cam_scan")
-            if scan is not None:
-                if scan: st.success(f"Available: index {scan}")
-                else:    st.warning("No cameras detected.")
-            st.text_input("Camera 1 Index", key="cam1_idx",
-                          help="0 = built-in  /  1 = first USB camera")
-            source1 = st.session_state.cam1_idx
+            _scan_col, _btn_col = st.columns([3, 1])
+            if _btn_col.button("Scan", use_container_width=True, key="scan_btn"):
+                _found = []
+                with st.spinner("Scanning 0–4…"):
+                    for _idx in range(5):
+                        _c = cv2.VideoCapture(_idx, cv2.CAP_DSHOW)
+                        if _c.isOpened():
+                            _r, _ = _c.read()
+                            if _r: _found.append(_idx)
+                        _c.release()
+                st.session_state["cam_options"] = _found if _found else list(range(5))
+                if not _found: st.warning("No cameras detected — showing all indices.")
+            _cam_opts = st.session_state.get("cam_options", list(range(5)))
+            _cam_sel  = _scan_col.selectbox(
+                "Select Camera",
+                options=_cam_opts,
+                format_func=lambda x: f"Camera {x}" + (" (built-in)" if x == 0 else ""),
+                key="cam1_idx_sel",
+            )
+            source1 = str(_cam_sel)
         else:
             # Drag-and-drop upload (saves to project videos/ folder)
             uploaded = st.file_uploader(
@@ -1005,19 +971,10 @@ with tab_live:
             if source1 and not Path(source1).exists():
                 st.warning("File not found.")
 
-        st.checkbox("Enable Camera 2 / second source", key="cam2_enabled")
-        if st.session_state.cam2_enabled:
-            st.text_input(
-                "Camera 2 Index" if source_type == "Camera" else "Video 2 Path",
-                key="cam2_source",
-            )
-            source2 = st.session_state.cam2_source if st.session_state.cam2_source else None
-        else:
-            source2 = None
+        source2 = None  # multi-camera not yet active
 
         _s1 = str(source1).strip() if source1 else None
-        _s2 = str(source2).strip() if source2 else None
-        if running and (_state.get("source1") != _s1 or _state.get("source2") != _s2):
+        if running and _state.get("source1") != _s1:
             st.warning("Source changed — click Restart to apply.")
 
         _section("Pipeline Control")
@@ -1050,17 +1007,13 @@ with tab_live:
             st.error(f"Pipeline error: {_state['error']}")
 
         _section("Detection Parameters")
-        s_live  = load_settings()
         conf    = st.slider("Confidence", 0.10, 0.95,
-                            float(s_live.get("confidence_threshold", 0.50)), 0.05)
+                            float(s_global.get("confidence_threshold", 0.50)), 0.05)
         iou_val = st.slider("NMS IoU",    0.10, 0.95,
-                            float(s_live.get("iou_threshold", 0.45)), 0.05)
-        show_ov = st.checkbox("Show overlap zone overlay",
-                              value=bool(s_live.get("show_overlap_preview", True)))
-        if st.button("Apply", use_container_width=True):
-            save_settings({"confidence_threshold": conf,
-                           "iou_threshold": iou_val,
-                           "show_overlap_preview": show_ov})
+                            float(s_global.get("iou_threshold", 0.45)), 0.05)
+        _apply_lbl = "Save (restart to apply)" if running else "Apply"
+        if st.button(_apply_lbl, use_container_width=True):
+            save_settings({"confidence_threshold": conf, "iou_threshold": iou_val})
             st.toast("Parameters saved.")
 
     with feed_col:
@@ -1082,13 +1035,12 @@ with tab_live:
             # → browser at true 30 FPS without any MJPEG or Streamlit rerun.
             from ultralytics import YOLO as _YOLO
 
-            _s = load_settings()
-            _pt  = _s.get("model_path", "")
+            _pt  = s_global.get("model_path", "")
             _eng = Path(_pt).with_suffix(".engine") if _pt else None
             _mdl_path = str(_eng) if (_eng and _eng.exists()) \
                         else (_pt if _pt and Path(_pt).exists() else "yolo11n-seg.pt")
-            _wconf = float(_s.get("confidence_threshold", 0.30))
-            _wiou  = float(_s.get("iou_threshold", 0.45))
+            _wconf = float(s_global.get("confidence_threshold", 0.30))
+            _wiou  = float(s_global.get("iou_threshold", 0.45))
 
             @st.cache_resource
             def _load_webrtc_model(path):
@@ -1116,11 +1068,7 @@ with tab_live:
                             except Exception: pass
                         for i, xyxy in enumerate(boxes.xyxy):
                             x1,y1,x2,y2 = [int(v) for v in xyxy]
-                            w,h = x2-x1, y2-y1
-                            if w<10 or h<10: continue
-                            if w>384 or h>384: continue
-                            ar = w/max(h,1)
-                            if not (0.25 <= ar <= 4.0): continue
+                            if not _keep_box(x1, y1, x2, y2, 640): continue
                             tid = tids[i] if tids and i<len(tids) else -1
                             cf  = float(boxes.conf[i])
                             cv2.rectangle(img,(x1,y1),(x2,y2),(0,200,60),2)
@@ -1188,14 +1136,15 @@ with tab_analytics:
     counts   = summary.get("counts", {})
     defects  = summary.get("defects", {})
     rows     = st.session_state.get("_db_recent", [])
-    reject_n = sum(1 for r in rows if r.get("final_grade") == "reject")
-    a_n      = sum(1 for r in rows if r.get("final_grade") == "grade_a")
     dias     = [r["estimated_diameter_mm"] for r in rows if r.get("estimated_diameter_mm")]
+    # Use summary counts (full DB) not rows slice for percentages
+    _a_cnt  = counts.get("grade_a", 0)
+    _rj_cnt = counts.get("reject", 0)
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total Graded", total_s)
-    k2.metric("Grade A",      f"{a_n/total_s*100:.1f}%"      if total_s else "—")
-    k3.metric("Reject Rate",  f"{reject_n/total_s*100:.1f}%" if total_s else "—")
+    k2.metric("Grade A",      f"{_a_cnt/total_s*100:.1f}%"  if total_s else "—")
+    k3.metric("Reject Rate",  f"{_rj_cnt/total_s*100:.1f}%" if total_s else "—")
     k4.metric("Avg Diameter", f"{sum(dias)/len(dias):.1f} mm" if dias else "—")
 
     st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
@@ -1261,7 +1210,7 @@ with tab_disputes:
         </div>
         """, unsafe_allow_html=True)
     else:
-        st.warning(f"{len(disputed)} disputed record(s) — batch {st.session_state.batch_id}")
+        st.warning(f"{len(disputed)} disputed record(s)")
         ids = [r["global_id"] for r in disputed]
         sel = st.selectbox("Select Onion ID", ids, format_func=lambda x: f"Onion #{x}")
         row = next((r for r in disputed if r["global_id"] == sel), None)
@@ -1350,11 +1299,8 @@ with tab_settings:
     col_a, col_b = st.columns(2)
     ov1s = col_a.slider("Start X (px)", 0, 1280, int(s.get("overlap_start_cam1_x", 900)),  10, key="ov1s")
     ov1e = col_b.slider("End X (px)",   0, 1280, int(s.get("overlap_end_cam1_x",   1280)), 10, key="ov1e")
-
-    _section("Overlap Zone — Camera 2")
-    col_c, col_d = st.columns(2)
-    ov2s = col_c.slider("Start X (px)", 0, 1280, int(s.get("overlap_start_cam2_x", 0)),   10, key="ov2s")
-    ov2e = col_d.slider("End X (px)",   0, 1280, int(s.get("overlap_end_cam2_x",   380)), 10, key="ov2e")
+    ov2s = int(s.get("overlap_start_cam2_x", 0))
+    ov2e = int(s.get("overlap_end_cam2_x",   380))
 
     _section("Belt & Ejector")
     col_e, col_f = st.columns(2)
@@ -1368,12 +1314,12 @@ with tab_settings:
         value=bool(s.get("simulated_ejector", True)),
     )
 
-    _section("Cross-Camera Matching")
-    col_g, col_h = st.columns(2)
-    match_iou = col_g.slider("IoU Threshold",  0.10, 0.80,
-                              float(s.get("cross_cam_iou_threshold", 0.30)), 0.05)
-    match_win = col_h.slider("Time Window (s)", 0.5, 10.0,
-                              float(s.get("match_time_window_s",    2.0)),  0.5)
+    with st.expander("Cross-Camera Matching (multi-cam — not yet active)"):
+        col_g, col_h = st.columns(2)
+        match_iou = col_g.slider("IoU Threshold",  0.10, 0.80,
+                                  float(s.get("cross_cam_iou_threshold", 0.30)), 0.05)
+        match_win = col_h.slider("Time Window (s)", 0.5, 10.0,
+                                  float(s.get("match_time_window_s",    2.0)),  0.5)
 
     _section("Size Estimation")
     cal = st.slider("Calibration Factor (mm/pixel)", 0.001, 0.10,
