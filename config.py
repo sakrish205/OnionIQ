@@ -58,6 +58,7 @@ CENTRE_ID = "CENTRE_01"
 # Defaults dict (mirrors all tunable settings)
 _DEFAULTS = {
     "model_path": MODEL_PATH,
+    "data_yaml": "",
     "confidence_threshold": CONFIDENCE_THRESHOLD,
     "iou_threshold": IOU_THRESHOLD,
     "image_size": IMAGE_SIZE,

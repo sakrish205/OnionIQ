@@ -1,20 +1,22 @@
 """
-OnionIQ — AI-powered Onion Quality Grading System (SIH26031)
-Dashboard: Streamlit + streamlit-elements (Material UI + Nivo charts)
-
-Run:  streamlit run dashboard.py
+OnionIQ — AI-Powered Onion Quality Grading System (SIH26031)
+Dashboard — UX4G official semantic tokens, elevation, and input spec.
 """
-import os
-import sys
-import threading
-import time
+import os, queue, sys, threading, time
 from pathlib import Path
+
+try:
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase
+    import av
+    _WEBRTC_OK = True
+except ImportError:
+    _WEBRTC_OK = False
 
 import cv2
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
-from streamlit_elements import dashboard, elements, mui, nivo
 
 _PROJECT = Path(__file__).parent
 sys.path.insert(0, str(_PROJECT))
@@ -25,101 +27,582 @@ from grader import GradeDecisionEngine
 from matcher import CrossCameraMatcher
 from model_wrapper import OnionModel
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Brand & colour constants
-# ─────────────────────────────────────────────────────────────────────────────
-PRIMARY      = "#FF8C42"   # onion amber
-PRIMARY_DARK = "#E65100"
-CARD_BG      = "#1A1F2E"
-HEADER_BG    = "#0D1117"
-
-GRADE_BGR = {
-    "grade_a": (80, 200, 80),   "grade_b": (40, 160, 255),
-    "grade_c": (40, 40, 220),   "reject":  (130, 50, 200),
-    "sprouting":(20,180,200),   "rot":     (30, 30, 180),
-    "thrips_damage":(40,80,220),"neck_rot":(20, 20, 180),
-    "sunscald":(20,200,220),    "bruising":(60,100,200),
-    "onion":   (200,160,60),    "detected":(200,160,60),
-}
-GRADE_HEX = {
-    "grade_a":"#50c850","grade_b":"#ffa028","grade_c":"#dc2828",
-    "reject":"#8832c8","sprouting":"#c8b420","rot":"#b41414",
-    "onion":"#3c8cd8","detected":"#3c8cd8",
-}
-NIVO_THEME = {
-    "background": "#0E1117",
-    "textColor":  "#FAFAFA",
-    "fontSize":   12,
-    "axis": {
-        "domain": {"line": {"stroke": "#555"}},
-        "ticks":  {"line": {"stroke": "#555"}, "text": {"fill": "#AAAAAA"}},
-        "legend": {"text": {"fill": "#FAFAFA"}},
+# ── UX4G semantic token palettes ──────────────────────────────────────────────
+THEMES = {
+    "light": {
+        # Backgrounds
+        "page_bg":      "#F5F5F5",   # ux4g-bg-neutral-soft
+        "card_bg":      "#FFFFFF",   # ux4g-bg-neutral-elevated
+        "sidebar_bg":   "#301C7D",   # ux4g-bg-primary-stronger
+        "header_bg":    "#301C7D",
+        # Text
+        "sidebar_text": "#FFFFFF",
+        "sidebar_muted":"rgba(255,255,255,0.58)",
+        "header_text":  "#FFFFFF",
+        "text":         "#171717",   # ux4g-text-neutral-primary
+        "text_2":       "#404040",   # ux4g-text-neutral-secondary
+        "text_muted":   "#737373",   # ux4g-text-neutral-tertiary
+        # Brand
+        "primary":      "#4A2BC2",   # ux4g-color-primary-600
+        "primary_h":    "#3D239F",   # ux4g-color-primary-700 (hover)
+        "accent":       "#A46800",   # ux4g-color-secondary-600
+        "accent_em":    "#FFBE6F",   # ux4g-bg-secondary-emphasis (focus ring, tab line)
+        # Borders & inputs
+        "border":       "#D9D9D9",   # ux4g-border-color-neutral-default
+        "border_s":     "#E5E5E5",   # ux4g-border-color-neutral-subtle
+        "input_bg":     "#FAFAFA",   # ux4g-control-bg-default
+        "input_border": "#D9D9D9",
+        "input_text":   "#171717",
+        "input_ph":     "#A1A1A1",   # ux4g-color-neutral-400
+        "input_focus":  "#4A2BC2",   # ux4g-border-color-primary-strong
+        # Status
+        "success":      "#128937",   # ux4g-bg-success-strong
+        "success_bg":   "#F2FCEF",   # ux4g-bg-success
+        "success_bdr":  "#80DA88",   # ux4g-border-color-success-default
+        "danger":       "#DB372D",   # ux4g-bg-error-strong
+        "danger_bg":    "#FFF8F8",   # ux4g-bg-error
+        "danger_bdr":   "#FFB3AE",   # ux4g-border-color-error-default
+        "warn":         "#AD4E00",   # ux4g-text-status-warning
+        "warn_bg":      "#FFF7E6",   # ux4g-bg-warning
+        "warn_bdr":     "#FFC973",   # ux4g-border-color-warning-default
+        "info":         "#006D75",   # ux4g-text-status-info
+        "info_bg":      "#E6FFFB",   # ux4g-bg-info
+        "info_bdr":     "#91E8E0",   # ux4g-border-color-info-default
+        # Misc
+        "metric_val":   "#4A2BC2",
+        "chip_stop":    "#525252",   # ux4g-bg-neutral-strong
+        "tab_line":     "#A46800",   # secondary amber — tab active underline
+        # Elevation — UX4G level 2
+        "elev_1":       "rgba(0,0,0,0.08)",
+        "elev_2":       "rgba(0,0,0,0.12)",
+        # Charts
+        "plot_bg":      "#FFFFFF",
+        "plot_paper":   "#F5F5F5",
+        "plot_grid":    "#E5E5E5",
+        "plot_text":    "#171717",
+        "grade_colors": {
+            "Grade A":"#128937","Grade B":"#4A2BC2","Grade C":"#A46800",
+            "Reject": "#DB372D","Sprouting":"#006D75","Rot":"#8A1A16",
+            "Detected":"#4A2BC2","Onion":"#4A2BC2",
+        },
     },
-    "grid":   {"line": {"stroke": "#333"}},
-    "legends":{"text": {"fill": "#AAAAAA"}},
-    "tooltip":{"container": {"background": "#1A1F2E", "color": "#FAFAFA"}},
+    "dark": {
+        "page_bg":      "#0E0C1A",
+        "card_bg":      "#1A1628",
+        "sidebar_bg":   "#08061A",
+        "header_bg":    "#08061A",
+        "sidebar_text": "#FAFAFA",   # ux4g-text-neutral-inverse
+        "sidebar_muted":"rgba(250,250,250,0.50)",
+        "header_text":  "#FAFAFA",
+        "text":         "#FAFAFA",   # ux4g-text-neutral-inverse
+        "text_2":       "#D9D9D9",   # ux4g-text-neutral-emphasis
+        "text_muted":   "#A1A1A1",   # ux4g-color-neutral-400
+        "primary":      "#A391FF",   # ux4g-bg-primary-emphasis
+        "primary_h":    "#C0B3FF",   # ux4g-bg-primary-subtle
+        "accent":       "#FFBE6F",   # ux4g-bg-secondary-emphasis
+        "accent_em":    "#FFBE6F",
+        "border":       "#2E2A3E",
+        "border_s":     "#24203A",
+        "input_bg":     "#1E1A2E",
+        "input_border": "#3A3560",
+        "input_text":   "#FAFAFA",
+        "input_ph":     "#737373",   # ux4g-text-neutral-tertiary
+        "input_focus":  "#A391FF",
+        "success":      "#80DA88",   # ux4g-bg-success-emphasis
+        "success_bg":   "rgba(18,137,55,0.14)",
+        "success_bdr":  "#128937",
+        "danger":       "#FFB3AE",   # ux4g-bg-error-emphasis
+        "danger_bg":    "rgba(219,55,45,0.14)",
+        "danger_bdr":   "#DB372D",
+        "warn":         "#FFC973",   # ux4g-bg-warning-emphasis
+        "warn_bg":      "rgba(173,78,0,0.18)",
+        "warn_bdr":     "#FA8C16",
+        "info":         "#91E8E0",   # ux4g-bg-info-emphasis
+        "info_bg":      "rgba(19,194,194,0.11)",
+        "info_bdr":     "#13C2C2",
+        "metric_val":   "#A391FF",
+        "chip_stop":    "#3A3660",
+        "tab_line":     "#FFBE6F",
+        "elev_1":       "rgba(0,0,0,0.30)",
+        "elev_2":       "rgba(0,0,0,0.50)",
+        "plot_bg":      "#1A1628",
+        "plot_paper":   "#0E0C1A",
+        "plot_grid":    "#2E2A3E",
+        "plot_text":    "#FAFAFA",
+        "grade_colors": {
+            "Grade A":"#80DA88","Grade B":"#A391FF","Grade C":"#FFBE6F",
+            "Reject": "#FFB3AE","Sprouting":"#91E8E0","Rot":"#FF8080",
+            "Detected":"#A391FF","Onion":"#A391FF",
+        },
+    },
 }
 
-def _bbox_color(cls: str) -> tuple:
-    return GRADE_BGR.get(cls, (160, 160, 160))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Module-level pipeline state (survives Streamlit reruns within same process)
-# ─────────────────────────────────────────────────────────────────────────────
-_lock  = threading.Lock()
-_state: dict = {
-    "running": False,
-    "frame1": None, "frame2": None,
-    "fps": 0.0, "active_tracks": 0, "session_count": 0,
-    "stop_event": None, "thread": None, "error": None,
-    "source1": None, "source2": None,
-    "cam1_open": False, "cam2_open": False,
+GRADE_DISPLAY = {
+    "grade_a":"Grade A","grade_b":"Grade B","grade_c":"Grade C",
+    "reject":"Reject","sprouting":"Sprouting","rot":"Rot",
+    "neck_rot":"Neck Rot","thrips_damage":"Thrips","sunscald":"Sunscald",
+    "bruising":"Bruising","onion":"Detected","detected":"Detected",
+}
+GRADE_BGR = {
+    "grade_a":(34,137,18),"grade_b":(194,43,130),"grade_c":(0,104,164),
+    "reject":(45,55,219),"sprouting":(117,109,0),"rot":(22,26,138),
+    "thrips_damage":(0,78,173),"neck_rot":(0,28,125),"sunscald":(0,150,144),
+    "bruising":(90,55,120),"onion":(194,43,74),"detected":(194,43,74),
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Frame annotation
-# ─────────────────────────────────────────────────────────────────────────────
+def _css(t: dict) -> str:
+    return f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+html, body, [class*="css"] {{
+    font-family: 'Inter', system-ui, sans-serif !important;
+}}
+
+/* ── Page ─────────────────────────────────────────────────── */
+.stApp {{ background: {t['page_bg']} !important; }}
+.main .block-container {{ padding-top: 0.75rem !important; max-width: 100% !important; }}
+
+/* ── Sidebar ──────────────────────────────────────────────── */
+section[data-testid="stSidebar"] > div:first-child {{
+    background: {t['sidebar_bg']} !important;
+    border-right: 2px solid {t['accent']} !important;
+}}
+section[data-testid="stSidebar"] * {{
+    color: {t['sidebar_text']} !important;
+    font-family: 'Inter', system-ui, sans-serif !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stMetricLabel"],
+section[data-testid="stSidebar"] small {{
+    color: {t['sidebar_muted']} !important;
+    font-size: 0.68rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+}}
+section[data-testid="stSidebar"] [data-testid="stMetricValue"] {{
+    color: {t['accent_em']} !important;
+    font-weight: 700;
+    font-size: 1.2rem !important;
+}}
+
+/* UX4G input spec — light sidebar */
+section[data-testid="stSidebar"] .stTextInput input {{
+    background: {t['input_bg']} !important;
+    border: 1.5px solid {t['border']} !important;
+    color: {t['input_text']} !important;
+    -webkit-text-fill-color: {t['input_text']} !important;
+    border-radius: 4px !important;
+    font-size: 0.85rem !important;
+    padding: 7px 10px !important;
+    font-family: 'Inter', sans-serif !important;
+    box-shadow: none !important;
+}}
+section[data-testid="stSidebar"] .stTextInput input:focus {{
+    border-color: {t['accent_em']} !important;
+    box-shadow: 0 0 0 2px rgba(255,190,111,0.28) !important;
+    outline: none !important;
+}}
+section[data-testid="stSidebar"] .stTextInput input::placeholder {{
+    color: {t['input_ph']} !important;
+    -webkit-text-fill-color: {t['input_ph']} !important;
+}}
+/* Sidebar label — ensure white */
+section[data-testid="stSidebar"] .stTextInput label,
+section[data-testid="stSidebar"] .stTextInput label p {{
+    color: {t['sidebar_text']} !important;
+    -webkit-text-fill-color: {t['sidebar_text']} !important;
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    margin-bottom: 4px !important;
+}}
+section[data-testid="stSidebar"] .stButton > button {{
+    background: {t['accent']} !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 0.83rem;
+    padding: 8px 14px;
+}}
+
+/* ── Top Streamlit header ─────────────────────────────────── */
+header[data-testid="stHeader"] {{ background: {t['header_bg']} !important; }}
+
+/* ── Tabs ─────────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {{
+    background: {t['card_bg']};
+    border-bottom: 2px solid {t['border']};
+    gap: 0;
+    padding: 0 6px;
+    box-shadow: 0px 1px 2px 0px {t['elev_1']};
+}}
+.stTabs [data-baseweb="tab"] {{
+    color: {t['text_muted']} !important;
+    font-weight: 500;
+    font-size: 0.855rem;
+    padding: 10px 22px;
+    border-radius: 0;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    background: transparent !important;
+    font-family: 'Inter', sans-serif !important;
+}}
+.stTabs [aria-selected="true"] {{
+    color: {t['primary']} !important;
+    font-weight: 700;
+    border-bottom: 2px solid {t['tab_line']} !important;
+}}
+.stTabs [data-baseweb="tab-panel"] {{
+    background: {t['page_bg']};
+    padding: 20px 2px 12px;
+}}
+
+/* ── Metric tiles — UX4G elevation level 2 ───────────────── */
+[data-testid="stMetric"] {{
+    background: {t['card_bg']};
+    border: 1px solid {t['border_s']};
+    border-top: 3px solid {t['primary']};
+    border-radius: 6px;
+    padding: 14px 18px;
+    box-shadow: 0px 4px 8px 0px {t['elev_2']}, 0px 1px 2px 0px {t['elev_1']};
+}}
+[data-testid="stMetricValue"] {{
+    color: {t['metric_val']} !important;
+    font-weight: 700;
+    font-size: 1.4rem !important;
+    font-variant-numeric: tabular-nums;
+    font-family: 'JetBrains Mono', monospace !important;
+}}
+[data-testid="stMetricLabel"] {{
+    color: {t['text_muted']} !important;
+    font-size: 0.68rem !important;
+    font-weight: 700 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+}}
+
+/* ── UX4G Input — Medium spec ────────────────────────────── */
+.stTextInput label,
+.stTextInput label p {{
+    color: {t['text']} !important;
+    -webkit-text-fill-color: {t['text']} !important;
+    font-size: 0.83rem !important;
+    font-weight: 600 !important;
+    margin-bottom: 4px !important;
+    font-family: 'Inter', sans-serif !important;
+}}
+.stTextInput input {{
+    background: {t['input_bg']} !important;
+    border: 1.5px solid {t['input_border']} !important;
+    color: {t['input_text']} !important;
+    -webkit-text-fill-color: {t['input_text']} !important;
+    border-radius: 4px !important;
+    font-size: 0.875rem !important;
+    padding: 8px 10px !important;
+    font-family: 'Inter', sans-serif !important;
+    transition: border-color 0.14s, box-shadow 0.14s;
+    box-shadow: 0px 1px 2px 0px {t['elev_1']};
+}}
+.stTextInput input:focus {{
+    border-color: {t['input_focus']} !important;
+    box-shadow: 0px 1px 2px 0px {t['elev_1']}, 0 0 0 3px color-mix(in srgb, {t['input_focus']} 20%, transparent) !important;
+    outline: none !important;
+}}
+.stTextInput input::placeholder {{
+    color: {t['input_ph']} !important;
+    -webkit-text-fill-color: {t['input_ph']} !important;
+}}
+
+/* Other form labels */
+.stSelectbox label,
+.stSlider label,
+.stCheckbox label,
+.stRadio label,
+.stCheckbox span,
+.stRadio span {{
+    color: {t['text']} !important;
+    -webkit-text-fill-color: {t['text']} !important;
+    font-size: 0.83rem !important;
+    font-weight: 500 !important;
+}}
+
+/* ── Buttons ──────────────────────────────────────────────── */
+.stButton > button {{
+    background: {t['card_bg']};
+    color: {t['text']};
+    border: 1.5px solid {t['border']};
+    border-radius: 4px;
+    font-size: 0.83rem;
+    font-weight: 500;
+    padding: 6px 16px;
+    font-family: 'Inter', sans-serif !important;
+    box-shadow: 0px 1px 2px 0px {t['elev_1']};
+    transition: border-color 0.12s, box-shadow 0.12s;
+}}
+.stButton > button:hover {{
+    border-color: {t['primary']};
+    color: {t['primary']};
+    box-shadow: 0px 4px 8px 0px {t['elev_2']}, 0px 1px 2px 0px {t['elev_1']};
+}}
+button[kind="primary"],
+.stButton [kind="primary"] > button {{
+    background: {t['primary']} !important;
+    color: #fff !important;
+    border: none !important;
+    font-weight: 600 !important;
+    box-shadow: 0px 4px 8px 0px {t['elev_2']}, 0px 1px 2px 0px {t['elev_1']} !important;
+}}
+button[kind="primary"]:hover,
+.stButton [kind="primary"] > button:hover {{
+    background: {t['primary_h']} !important;
+}}
+
+/* ── Alerts — UX4G status colors ─────────────────────────── */
+[data-testid="stAlert"] > div {{
+    border-radius: 4px;
+    font-size: 0.84rem;
+    border-left-width: 3px;
+    font-family: 'Inter', sans-serif !important;
+}}
+[data-testid="stInfo"] > div {{
+    background: {t['info_bg']} !important;
+    border-color: {t['info_bdr']} !important;
+    color: {t['text']} !important;
+}}
+[data-testid="stSuccess"] > div {{
+    background: {t['success_bg']} !important;
+    border-color: {t['success_bdr']} !important;
+    color: {t['text']} !important;
+}}
+[data-testid="stWarning"] > div {{
+    background: {t['warn_bg']} !important;
+    border-color: {t['warn_bdr']} !important;
+    color: {t['text']} !important;
+}}
+[data-testid="stError"] > div {{
+    background: {t['danger_bg']} !important;
+    border-color: {t['danger_bdr']} !important;
+    color: {t['text']} !important;
+}}
+
+/* ── Dividers ─────────────────────────────────────────────── */
+hr {{ border-color: {t['border']} !important; margin: 10px 0 !important; }}
+
+/* ── Dataframe ────────────────────────────────────────────── */
+.stDataFrame {{
+    border: 1px solid {t['border']};
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0px 1px 2px 0px {t['elev_1']};
+}}
+
+/* ── Text in main area ────────────────────────────────────── */
+p, li {{ color: {t['text']}; font-family: 'Inter', sans-serif !important; }}
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li {{
+    color: {t['text']} !important;
+    -webkit-text-fill-color: {t['text']} !important;
+    font-size: 0.875rem;
+}}
+.stCaption, [data-testid="stCaption"] {{
+    color: {t['text_muted']} !important;
+    font-size: 0.76rem !important;
+}}
+
+/* ── Section label ────────────────────────────────────────── */
+.iq-section {{
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: {t['primary']};
+    padding: 16px 0 7px;
+    border-bottom: 2px solid {t['accent_em']};
+    margin-bottom: 12px;
+}}
+</style>
+"""
+
+
+def _section(label: str) -> None:
+    st.markdown(f'<div class="iq-section">{label}</div>', unsafe_allow_html=True)
+
+
+def _empty_state(title: str, sub: str, t: dict) -> None:
+    st.markdown(f"""
+    <div style="background:{t['card_bg']};border:1px solid {t['border']};border-radius:6px;
+                padding:52px 40px;text-align:center;
+                box-shadow:0px 1px 2px 0px {t['elev_1']}">
+      <div style="font-weight:600;color:{t['text']};margin-bottom:6px">{title}</div>
+      <div style="font-size:0.82rem;color:{t['text_muted']}">{sub}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _status_badge(running: bool, t: dict) -> str:
+    if running:
+        bg, label = t["success"], "LIVE"
+    else:
+        bg, label = t["chip_stop"], "STOPPED"
+    return (f'<span style="background:{bg};color:#fff;padding:4px 12px;'
+            f'border-radius:4px;font-size:0.68rem;font-weight:700;letter-spacing:0.8px;'
+            f'font-family:Inter,sans-serif">{label}</span>')
+
+
+# ── Pipeline state — cached across Streamlit reruns ───────────────────────────
+@st.cache_resource
+def _get_lock():
+    return threading.Lock()
+
+@st.cache_resource
+def _get_state():
+    return {
+        "running":False,"frame1":None,"frame2":None,
+        "fps":0.0,"active_tracks":0,"session_count":0,
+        "stop_event":None,"thread":None,"error":None,
+        "source1":None,"source2":None,"cam1_open":False,"cam2_open":False,
+        "loading":False,"loading_msg":"",
+        "frame_count":0,"total_frames":0,
+        "reset_requested":False,
+    }
+
+_lock  = _get_lock()
+_state = _get_state()
+
+
+# ── MJPEG stream server — bypasses Streamlit rerun for smooth video ───────────
+@st.cache_resource
+def _start_mjpeg_server():
+    """Start a single MJPEG HTTP server (once per process) on a fixed port.
+    The browser's <img> tag streams frames directly at 30 FPS without any
+    Streamlit rerun, giving the same smoothness as cv2.imshow()."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import socket
+
+    _PORT = 5679  # fixed port; change if something else is using it
+
+    # Check if already bound (e.g. after Streamlit hot-reload)
+    _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _already = _sock.connect_ex(("127.0.0.1", _PORT)) == 0
+    _sock.close()
+    if _already:
+        return _PORT   # server already running from a previous run
+
+    # Capture module-level _lock / _state by name (always the same cached objects)
+    _st = _state
+    _lk = _lock
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            cam_key = "frame1" if self.path.startswith("/feed1") else "frame2"
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=--iqframe")
+                self.send_header("Cache-Control", "no-cache, no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                _blank = np.zeros((360, 640, 3), dtype=np.uint8)
+                _prev  = None
+                while True:
+                    with _lk:
+                        frame = _st.get(cam_key)
+                    img = frame if frame is not None else _blank
+                    if img is _prev:
+                        time.sleep(0.01)
+                        continue
+                    _prev = img
+                    ok, jpg = cv2.imencode(".jpg", img,
+                                          [cv2.IMWRITE_JPEG_QUALITY, 82])
+                    if not ok:
+                        time.sleep(0.01)
+                        continue
+                    data = jpg.tobytes()
+                    self.wfile.write(b"----iqframe\r\n"
+                                     b"Content-Type: image/jpeg\r\n\r\n")
+                    self.wfile.write(data)
+                    self.wfile.write(b"\r\n")
+                    time.sleep(0.033)   # ~30 FPS push rate
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass    # client disconnected
+
+        def log_message(self, *_):
+            pass  # silence access logs
+
+    server = HTTPServer(("127.0.0.1", _PORT), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True,
+                     name="MJPEGServer").start()
+    return _PORT
+
+_MJPEG_PORT = _start_mjpeg_server()
+
+
+def _video_html(port: int, cam: int, label: str, h: int = 480) -> str:
+    """HTML snippet: an MJPEG <img> that streams without any Streamlit rerun."""
+    url = f"http://localhost:{port}/feed{cam}"
+    return f"""
+    <div style="position:relative;background:#0e0e0e;border-radius:6px;overflow:hidden;
+                line-height:0">
+      <img id="feed{cam}" src="{url}"
+           style="width:100%;display:block;max-height:{h}px;object-fit:contain"
+           onerror="setTimeout(()=>{{this.src='{url}?t='+Date.now()}},500)">
+      <div style="position:absolute;bottom:6px;left:8px;font-size:0.68rem;
+                  color:rgba(255,255,255,0.7);font-family:Inter,sans-serif;
+                  background:rgba(0,0,0,0.5);padding:2px 6px;border-radius:3px">
+        {label}
+      </div>
+    </div>
+    """
+
+
 def annotate_frame(frame, events, settings, cam_id, show_overlap=True):
     out = frame.copy()
     h, w = out.shape[:2]
     if show_overlap:
-        x1 = int(settings.get(f"overlap_start_cam{cam_id}_x", 900 if cam_id==1 else 0))
-        x2 = int(settings.get(f"overlap_end_cam{cam_id}_x",  1280 if cam_id==1 else 380))
-        ov = out.copy()
-        cv2.rectangle(ov, (x1, 0), (x2, h), (0, 200, 200), -1)
-        cv2.addWeighted(ov, 0.10, out, 0.90, 0, out)
-        cv2.line(out, (x1, 0), (x1, h), (0, 200, 200), 2)
-        cv2.line(out, (x2, 0), (x2, h), (0, 200, 200), 2)
-        cv2.putText(out, "OVERLAP", (x1+4, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,200,200), 1)
+        ox1 = int(settings.get(f"overlap_start_cam{cam_id}_x", 900 if cam_id == 1 else 0))
+        ox2 = int(settings.get(f"overlap_end_cam{cam_id}_x",  1280 if cam_id == 1 else 380))
+        ov  = out.copy()
+        cv2.rectangle(ov, (ox1, 0), (ox2, h), (74, 43, 194), -1)
+        cv2.addWeighted(ov, 0.11, out, 0.89, 0, out)
+        cv2.line(out, (ox1, 0), (ox1, h), (74, 43, 194), 2)
+        cv2.line(out, (ox2, 0), (ox2, h), (74, 43, 194), 2)
+        cv2.putText(out, "OVERLAP", (ox1 + 4, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (74, 43, 194), 1)
     for e in events:
         if e.cam_id != cam_id:
             continue
         x1, y1, x2, y2 = [int(v) for v in e.bbox]
-        col = _bbox_color(e.class_name)
-        cv2.rectangle(out, (x1,y1), (x2,y2), col, 2)
-        tid = f"#{e.track_id}"
-        (tw,th),_ = cv2.getTextSize(tid, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(out, (x1, y1-th-6), (x1+tw+6, y1), col, -1)
-        cv2.putText(out, tid, (x1+3, y1-4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-        cv2.putText(out, f"{e.class_name} {e.confidence:.0%}", (x1, y2+16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
-        if e.global_id:
-            cv2.putText(out, f"G{e.global_id}", (x1, y2+30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, (200,200,200), 1)
-    cv2.putText(out, f"CAM {cam_id}", (8, h-10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,255,255), 2)
+        col = GRADE_BGR.get(e.class_name, (100, 100, 100))
+        cv2.rectangle(out, (x1, y1), (x2, y2), col, 2)
+        lbl = f"#{e.track_id} {GRADE_DISPLAY.get(e.class_name, e.class_name)} {e.confidence:.0%}"
+        (tw, th), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        cv2.rectangle(out, (x1, y1 - th - 7), (x1 + tw + 5, y1), col, -1)
+        cv2.putText(out, lbl, (x1 + 3, y1 - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1)
+    cv2.putText(out, f"CAM {cam_id}", (8, h - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 2)
     return out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Pipeline worker
-# ─────────────────────────────────────────────────────────────────────────────
+_MIN_SIDE_PX   = 10
+_MAX_SIDE_FRAC = 0.60
+_MIN_ASPECT    = 0.25
+_MAX_ASPECT    = 4.0
+
+def _keep_box(x1, y1, x2, y2, frame_size=640):
+    w = x2 - x1; h = y2 - y1
+    if w < _MIN_SIDE_PX or h < _MIN_SIDE_PX: return False
+    if w > _MAX_SIDE_FRAC * frame_size or h > _MAX_SIDE_FRAC * frame_size: return False
+    return _MIN_ASPECT <= w / max(h, 1) <= _MAX_ASPECT
+
+
 class _PipelineWorker(threading.Thread):
+    """Inference backend — direct port of test_detection.py logic.
+    Reader thread → frame_q(4) → inference (model.track) → MJPEG state."""
+
     def __init__(self, source1, source2, settings, db, stop_event):
         super().__init__(daemon=True, name="PipelineWorker")
         self._source1  = source1
-        self._source2  = source2
         self._settings = settings
         self._db       = db
         self._stop     = stop_event
@@ -130,575 +613,616 @@ class _PipelineWorker(threading.Thread):
         try:
             self._run()
         except Exception as e:
+            import traceback; traceback.print_exc()
             with _lock:
-                _state["error"]   = str(e)
-                _state["running"] = False
+                _state["error"] = str(e); _state["running"] = False
 
-    def _open(self, source):
-        if source is None:
-            return None
-        try:
-            idx = int(source)
-            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(idx)
-        except (ValueError, TypeError):
-            cap = cv2.VideoCapture(str(source))
-        return cap if cap.isOpened() else None
-
+    # ──────────────────────────────────────────────────────────────────────────
     def _run(self):
-        from tracker import OnionTracker
+        from ultralytics import YOLO
 
-        model    = OnionModel(self._settings)
-        matcher  = CrossCameraMatcher(self._settings)
-        engine   = GradeDecisionEngine(self._settings)
-        tracker1 = OnionTracker(cam_id=1, settings=self._settings)
-        tracker2 = OnionTracker(cam_id=2, settings=self._settings)
+        # Guard: no source selected
+        if not self._source1 or str(self._source1).strip() in ("", "None"):
+            with _lock:
+                _state["error"]   = "No video/camera source selected. Choose a file or camera index first."
+                _state["running"] = False
+                _state["loading"] = False
+            return
 
-        cap1 = self._open(self._source1)
-        cap2 = self._open(self._source2) if self._source2 is not None else None
+        IMGSZ = 640
+        CONF  = float(self._settings.get("confidence_threshold", 0.30))
+        IOU   = float(self._settings.get("iou_threshold", 0.45))
+        _pt   = self._settings.get("model_path", "")
+        _eng  = Path(_pt).with_suffix(".engine") if _pt else None
+        mdl   = str(_eng) if (_eng and _eng.exists()) \
+                else (_pt if _pt and Path(_pt).exists() else "yolo11n-seg.pt")
+
         with _lock:
-            _state["cam1_open"] = cap1 is not None
-            _state["cam2_open"] = cap2 is not None
+            _state["loading_msg"] = f"Loading {Path(mdl).name}…"
+        model = YOLO(mdl)
+        with _lock:
+            _state["loading"] = False; _state["loading_msg"] = ""
 
-        show_overlap = self._settings.get("show_overlap_preview", True)
-        WINDOW       = self._settings.get("match_time_window_s", 2.0)
-        frame_count  = 0
-        t_start      = time.time()
-        pending: dict = {}
+        # Open source
+        src = str(self._source1).strip()
+        try:
+            src_idx = int(src)
+            cap = cv2.VideoCapture(src_idx, cv2.CAP_DSHOW)
+            if not cap.isOpened(): cap = cv2.VideoCapture(src_idx)
+        except (ValueError, TypeError):
+            cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+            if not cap.isOpened(): cap = cv2.VideoCapture(src)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
 
-        def _blank():
-            f = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(f, "No source", (30, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (80,80,80), 2)
-            return f
+        if not cap.isOpened():
+            with _lock:
+                _state["error"]   = f"Cannot open source: {src}"
+                _state["running"] = False
+            return
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        with _lock:
+            _state["cam1_open"]    = True
+            _state["total_frames"] = total_frames
+            _state["frame_count"]  = 0
+
+        # ── reader thread (same pattern as test_detection.py) ─────────────────
+        frame_q   = queue.Queue(maxsize=4)
+        reset_flag = threading.Event()
+
+        def _reader():
+            while not self._stop.is_set():
+                ret, fr = cap.read()
+                if not ret:
+                    # wait for inference to drain queue before looping
+                    while not frame_q.empty() and not self._stop.is_set():
+                        time.sleep(0.05)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    reset_flag.set()
+                    continue
+                fr = cv2.resize(fr, (IMGSZ, IMGSZ))
+                while not self._stop.is_set():
+                    try: frame_q.put(fr, timeout=0.2); break
+                    except queue.Full: pass
+
+        threading.Thread(target=_reader, daemon=True, name="Reader").start()
+
+        # ── inference loop ────────────────────────────────────────────────────
+        fc = 0; unique_ids = set(); t0 = time.time(); errors = 0
+        _db_t = time.time()
 
         while not self._stop.is_set():
-            # Read frames
-            if cap1 and cap1.isOpened():
-                ret1, frame1 = cap1.read()
-                if not ret1:
-                    cap1.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    ret1, frame1 = cap1.read()
-                if not ret1:
-                    frame1 = _blank()
-            else:
-                frame1 = _blank()
+            # Video loop reset (end of file)
+            if reset_flag.is_set():
+                fc = 0; unique_ids = set(); t0 = time.time(); errors = 0
+                reset_flag.clear()
+            # Manual reset from UI button
+            if _state.get("reset_requested"):
+                fc = 0; unique_ids = set(); t0 = time.time(); errors = 0
+                with _lock: _state["reset_requested"] = False; _state["session_count"] = 0
 
-            if cap2 and cap2.isOpened():
-                ret2, frame2 = cap2.read()
-                if not ret2:
-                    cap2.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    ret2, frame2 = cap2.read()
-                if not ret2:
-                    frame2 = _blank()
-            else:
-                frame2 = None
+            try:
+                frame = frame_q.get(timeout=0.3)
+            except queue.Empty:
+                continue
 
-            # Inference
-            all_events = []
-            evts1 = model.predict(frame1, cam_id=1)
-            evts1 = tracker1.update(evts1, frame1)
-            all_events.extend(evts1)
-            if frame2 is not None:
-                evts2 = model.predict(frame2, cam_id=2)
-                evts2 = tracker2.update(evts2, frame2)
-                all_events.extend(evts2)
-
-            # Cross-camera matching + grading
-            for e in all_events:
-                e = matcher.process(e)
-                if e.global_id is None:
+            fc += 1
+            try:
+                results = model.track(
+                    frame, conf=CONF, iou=IOU, imgsz=IMGSZ,
+                    persist=True, tracker="bytetrack.yaml", verbose=False,
+                )
+            except Exception as ex:
+                errors += 1
+                if errors <= 3: print(f"[track] {ex}")
+                try:
+                    results = model.predict(frame, conf=CONF, iou=IOU,
+                                            imgsz=IMGSZ, verbose=False)
+                except Exception:
                     continue
-                pending.setdefault(e.global_id, []).append(e)
 
+            boxes = results[0].boxes
+            out   = frame.copy()
+            det_n = 0
+
+            if boxes is not None and len(boxes.xyxy) > 0:
+                track_ids = None
+                if hasattr(boxes, "id") and boxes.id is not None:
+                    try: track_ids = [int(boxes.id[i].item()) for i in range(len(boxes.id))]
+                    except Exception: pass
+
+                for i, xyxy in enumerate(boxes.xyxy):
+                    x1, y1, x2, y2 = [int(v) for v in xyxy]
+                    if not _keep_box(x1, y1, x2, y2, IMGSZ): continue
+                    tid      = track_ids[i] if track_ids and i < len(track_ids) else -1
+                    conf_val = float(boxes.conf[i])
+                    if tid > 0: unique_ids.add(tid)
+                    # Green box — same as test_detection.py
+                    cv2.rectangle(out, (x1, y1), (x2, y2), (0, 200, 60), 2)
+                    lbl = f"#{tid} {conf_val:.0%}"
+                    (tw, th), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    cv2.rectangle(out, (x1, y1 - th - 8), (x1 + tw + 4, y1), (0, 200, 60), -1)
+                    cv2.putText(out, lbl, (x1 + 2, y1 - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    det_n += 1
+
+            elapsed = max(time.time() - t0, 1e-6)
+            fps_val = fc / elapsed
+            hud = (f"Frame {fc}/{total_frames}  Det: {det_n}  "
+                   f"Tracks: {len(unique_ids)}  {fps_val:.1f} FPS")
+            cv2.putText(out, hud, (6, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 0), 2)
+
+            # throttle DB insert to every 2 s
             now = time.time()
-            for gid in list(pending):
-                grp    = pending[gid]
-                cam_ids = {ev.cam_id for ev in grp}
-                oldest  = min(ev.timestamp for ev in grp)
-                if len(cam_ids) >= 2 or (now - oldest) > WINDOW:
-                    g  = pending.pop(gid)
-                    c1 = next((ev for ev in g if ev.cam_id==1), None)
-                    c2 = next((ev for ev in g if ev.cam_id==2), None)
-                    dec = engine.decide(gid, c1, c2, self._batch_id,
-                                        self._farmer, model.grading_active)
-                    self._db.insert_grade(dec.to_db_row())
-
-            # Annotate
-            ann1 = annotate_frame(frame1, all_events, self._settings, 1, show_overlap)
-            ann2 = annotate_frame(frame2, all_events, self._settings, 2, show_overlap) \
-                   if frame2 is not None else None
-
-            frame_count += 1
-            elapsed = time.time() - t_start
-            fps = frame_count / elapsed if elapsed > 0 else 0
-            session_count = self._db.get_batch_summary(self._batch_id).get("total", 0)
+            sc  = _state.get("session_count", 0)
+            if now - _db_t > 2.0:
+                _db_t = now
+                try: sc = self._db.get_batch_summary(self._batch_id).get("total", 0)
+                except Exception: pass
 
             with _lock:
-                _state["frame1"]         = ann1
-                _state["frame2"]         = ann2
-                _state["fps"]            = round(fps, 1)
-                _state["active_tracks"]  = len(pending)
-                _state["session_count"]  = session_count
+                _state["frame1"]        = out
+                _state["fps"]           = round(fps_val, 1)
+                _state["active_tracks"] = len(unique_ids)
+                _state["session_count"] = len(unique_ids)
+                _state["frame_count"]   = fc
 
-            time.sleep(0.033)
-
-        if cap1: cap1.release()
-        if cap2: cap2.release()
+        cap.release()
         with _lock:
             _state["running"] = False
             _state["frame1"]  = None
-            _state["frame2"]  = None
 
 
-def _start_pipeline(source1, source2, settings, db):
+def _start_pipeline(s1, s2, settings, db):
     with _lock:
-        if _state.get("running"):
-            return
+        if _state.get("running"): return
         stop = threading.Event()
         _state.update({
             "stop_event": stop, "running": True, "error": None,
-            "source1": str(source1) if source1 is not None else None,
-            "source2": str(source2) if source2 is not None else None,
+            "loading": True, "loading_msg": "Loading model…",
+            "source1": str(s1) if s1 else None,
+            "source2": str(s2) if s2 else None,
         })
-        t = _PipelineWorker(source1, source2, settings, db, stop)
-        _state["thread"] = t
-        t.start()
+        t = _PipelineWorker(s1, None, settings, db, stop)
+        _state["thread"] = t; t.start()
 
 
 def _stop_pipeline():
     with _lock:
         s = _state.get("stop_event")
-        if s:
-            s.set()
+        if s: s.set()
 
 
-def _restart_pipeline(source1, source2, settings, db):
+def _restart_pipeline(s1, s2, settings, db):
     with _lock:
         s = _state.get("stop_event")
-        if s:
-            s.set()
+        if s: s.set()
         _state["running"] = False
         _state["frame1"]  = None
         _state["frame2"]  = None
-    _start_pipeline(source1, source2, settings, db)
+    _start_pipeline(s1, s2, settings, db)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Page config
-# ─────────────────────────────────────────────────────────────────────────────
+def _bar_chart(data: dict, title: str, t: dict) -> go.Figure:
+    labels = [GRADE_DISPLAY.get(k, k.replace("_", " ").title()) for k in data]
+    values = list(data.values())
+    colors = [t["grade_colors"].get(
+        GRADE_DISPLAY.get(k, k.replace("_", " ").title()), t["primary"]
+    ) for k in data]
+    fig = go.Figure(go.Bar(
+        x=labels, y=values, marker_color=colors, marker_line_width=0,
+        text=values, textposition="outside",
+        textfont=dict(size=11, color=t["plot_text"], family="Inter"),
+    ))
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=12, color=t["plot_text"], family="Inter"), x=0),
+        plot_bgcolor=t["plot_bg"], paper_bgcolor=t["plot_paper"],
+        font=dict(color=t["plot_text"], family="Inter", size=11),
+        xaxis=dict(gridcolor=t["plot_grid"], linecolor=t["border"],
+                   tickfont=dict(size=10, color=t["plot_text"])),
+        yaxis=dict(gridcolor=t["plot_grid"], linecolor=t["border"],
+                   tickfont=dict(size=10, color=t["plot_text"])),
+        margin=dict(t=36, b=10, l=10, r=10), height=270, showlegend=False,
+    )
+    return fig
+
+
+def _pie_chart(data: dict, title: str, t: dict) -> go.Figure:
+    labels = [GRADE_DISPLAY.get(k, k.replace("_", " ").title()) for k in data]
+    values = list(data.values())
+    colors = [t["grade_colors"].get(
+        GRADE_DISPLAY.get(k, k.replace("_", " ").title()), t["primary"]
+    ) for k in data]
+    fig = go.Figure(go.Pie(
+        labels=labels, values=values, marker_colors=colors,
+        hole=0.42, textinfo="percent+label",
+        textfont=dict(size=10, color=t["plot_text"]),
+        insidetextorientation="radial",
+    ))
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=12, color=t["plot_text"], family="Inter"), x=0),
+        plot_bgcolor=t["plot_bg"], paper_bgcolor=t["plot_paper"],
+        font=dict(color=t["plot_text"], family="Inter", size=10),
+        legend=dict(font=dict(size=9, color=t["plot_text"]),
+                    bgcolor="rgba(0,0,0,0)", borderwidth=0),
+        margin=dict(t=36, b=10, l=10, r=10), height=270,
+    )
+    return fig
+
+
+# ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="OnionIQ",
-    page_icon="🧅",
+    page_title="OnionIQ — SIH26031",
+    page_icon=":material/agriculture:",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
-# Session-state defaults
-for k, v in [
-    ("batch_id", "DEMO001"), ("farmer_name", ""),
-    ("source_type", "Camera"), ("cam1_idx", "0"),
-    ("cam2_enabled", False), ("cam2_source", "1"),
-    ("video_path", ""), ("refresh_ms", 200),
-]:
+_defaults = {
+    "theme": "light", "batch_id": "DEMO001", "farmer_name": "",
+    "cam1_idx": "0", "cam2_enabled": False, "cam2_source": "1",
+    "video_path": "", "source_type": "Video File",
+}
+for k, v in _defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
+T = THEMES[st.session_state.theme]
+st.markdown(_css(T), unsafe_allow_html=True)
+
 
 @st.cache_resource
-def get_db():
-    return OnionDatabase(DB_PATH)
+def get_db(): return OnionDatabase(DB_PATH)
 
-db      = get_db()
-s_global = load_settings()
+db          = get_db()
+s_global    = load_settings()
+running     = _state.get("running", False)
+_cp         = s_global.get("model_path", "")
+_has_custom = bool(_cp) and Path(_cp).exists()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sidebar
-# ─────────────────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown(f"""
-    <div style='text-align:center;padding:8px 0'>
-        <span style='font-size:2rem'>🧅</span><br>
-        <span style='font-size:1.4rem;font-weight:700;color:{PRIMARY}'>OnionIQ</span><br>
-        <span style='font-size:0.7rem;color:#888'>SIH26031 · Ministry of Consumer Affairs</span>
+# Cache expensive DB queries — only refresh every 2 s, not on every 0.05 s rerun
+_now = time.time()
+_cache_stale = (
+    "_db_cache_ts" not in st.session_state
+    or _now - st.session_state._db_cache_ts > 2.0
+    or st.session_state.get("_cached_batch") != st.session_state.batch_id
+)
+if _cache_stale:
+    _bid = st.session_state.batch_id
+    st.session_state._db_cache_ts  = _now
+    st.session_state._cached_batch = _bid
+    st.session_state._db_summary   = db.get_batch_summary(_bid)
+    st.session_state._db_recent    = db.get_recent(n=200, batch_id=_bid)
+    st.session_state._db_disputed  = db.get_disputed(batch_id=_bid)
+    st.session_state._db_farmer = None
+
+
+
+
+# ── Page header ────────────────────────────────────────────────────────────────
+_model_label = Path(_cp).stem if _has_custom else "YOLO11n-seg"
+st.markdown(f"""
+<div style="background:{T['header_bg']};color:{T['header_text']};padding:12px 20px;
+            border-radius:6px;margin-bottom:20px;
+            display:flex;align-items:center;justify-content:space-between;
+            border-left:4px solid {T['accent_em']};
+            box-shadow:0px 4px 8px 0px {T['elev_2']},0px 1px 2px 0px {T['elev_1']}">
+  <div>
+    <div style="font-size:0.98rem;font-weight:700;font-family:Inter,sans-serif;
+                letter-spacing:0.2px">
+      OnionIQ — Onion Quality Grading System
     </div>
-    """, unsafe_allow_html=True)
-    st.divider()
-    st.session_state.batch_id    = st.text_input("Batch ID",         value=st.session_state.batch_id)
-    st.session_state.farmer_name = st.text_input("Farmer / Supplier", value=st.session_state.farmer_name)
-    st.divider()
-    pending_count = db.count_pending_sync()
-    col_a, col_b = st.columns(2)
-    col_a.metric("Pending Sync", pending_count)
-    col_b.metric("Detected", _state.get("session_count", 0))
-    st.divider()
-    if st.button("📄 Generate Certificate", use_container_width=True):
-        import certificate
-        out = certificate.generate(st.session_state.batch_id, db, str(_PROJECT))
-        if out and os.path.exists(out):
-            with open(out, "rb") as f:
-                st.download_button("⬇ Download PDF", f.read(),
-                                   file_name=Path(out).name, mime="application/pdf")
-        else:
-            st.error("No data yet or ReportLab not installed.")
-    st.divider()
-    _cp = s_global.get("model_path", "")
-    _has_custom = bool(_cp) and Path(_cp).exists()
-    st.caption(f"Model: {'🟢 Custom' if _has_custom else '🔵 YOLO11n-seg (pre-trained)'}")
-    st.caption(f"Mode:  {'Grading Active' if _has_custom else 'Detection Only'}")
-    st.caption(f"Inference: CPU  ·  FPS {_state.get('fps', 0):.1f}")
+    <div style="font-size:0.68rem;color:rgba(255,255,255,0.55);margin-top:3px;
+                font-family:Inter,sans-serif">
+      Ministry of Consumer Affairs, Food &amp; Public Distribution
+      &nbsp;&middot;&nbsp; SIH26031
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span style="font-size:0.68rem;color:rgba(255,255,255,0.42);font-family:Inter,sans-serif">
+      {_model_label}
+    </span>
+    {_status_badge(running, T)}
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Header bar (Material UI)
-# ─────────────────────────────────────────────────────────────────────────────
-running = _state.get("running", False)
-with elements("header"):
-    with mui.Paper(elevation=2, sx={
-        "p": "10px 20px", "mb": 1, "display": "flex",
-        "alignItems": "center", "justifyContent": "space-between",
-        "bgcolor": CARD_BG, "borderRadius": 2,
-    }):
-        with mui.Box(sx={"display": "flex", "alignItems": "center", "gap": 2}):
-            mui.Typography("🧅 OnionIQ", variant="h6",
-                           sx={"fontWeight": 700, "color": PRIMARY})
-            mui.Typography("AI Onion Quality Grading · SIH26031",
-                           variant="caption", sx={"color": "#888"})
-        with mui.Box(sx={"display": "flex", "gap": 1}):
-            mui.Chip(
-                label="● RUNNING" if running else "○ STOPPED",
-                color="success" if running else "default",
-                size="small",
-                sx={"fontWeight": 600},
-            )
-            mui.Chip(
-                label=f"🟢 {Path(_cp).stem}" if _has_custom else "🔵 YOLO11n-seg",
-                color="warning" if _has_custom else "info",
-                size="small",
-            )
-            mui.Chip(
-                label=f"Batch: {st.session_state.batch_id}",
-                size="small", variant="outlined",
-            )
+# ── Top strip: model info + theme toggle ──────────────────────────────────────
+_strip_l, _strip_r = st.columns([8, 1])
+_strip_l.markdown(
+    f'<span style="font-size:0.72rem;color:{T["text_muted"]};font-family:Inter,sans-serif">'
+    f'Model: <b>{Path(_cp).stem if _has_custom else "YOLO11n-seg (default)"}</b>'
+    f' &nbsp;·&nbsp; FPS: {_state.get("fps", 0):.1f}'
+    f' &nbsp;·&nbsp; v1.0.0-beta</span>',
+    unsafe_allow_html=True,
+)
+_lbl = "Dark" if st.session_state.theme == "light" else "Light"
+if _strip_r.button(_lbl, key="theme_btn"):
+    st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
+    st.rerun()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Tabs
-# ─────────────────────────────────────────────────────────────────────────────
-tab_demo, tab_analytics, tab_disputes, tab_settings = st.tabs([
-    "📹 Live Demo", "📊 Analytics", "🔍 Disputes", "⚙️ Settings",
+# ── Tabs ───────────────────────────────────────────────────────────────────────
+tab_live, tab_analytics, tab_disputes, tab_settings = st.tabs([
+    "Live Detection", "Analytics & Reports", "Dispute Review", "Configuration",
 ])
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — Live Demo
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab_demo:
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — Live Detection
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_live:
+    _fc = _state.get("frame_count", 0)
+    _tf = _state.get("total_frames", 0)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Onions Counted", _state.get("active_tracks", 0))
+    k2.metric("Frame Rate",     f"{_state.get('fps', 0):.1f} FPS")
+    k3.metric("Frames",         f"{_fc}/{_tf}" if _tf > 0 else str(_fc))
+    k4.metric("Status",         "Live" if running else "Stopped")
 
-    # ── Live metric cards (Material UI) ─────────────────────────────────────
-    with elements("live_metrics"):
-        with mui.Grid(container=True, spacing=2, sx={"mb": 2}):
-            for label, value, icon_name, color in [
-                ("Detected",      _state.get("session_count", 0), "Radar",         PRIMARY),
-                ("FPS",           f"{_state.get('fps', 0):.1f}",  "Speed",         "#4CAF50"),
-                ("Active Tracks", _state.get("active_tracks", 0), "TrackChanges",  "#2196F3"),
-                ("Status",        "Running" if running else "Stopped",
-                                                                    "FiberManualRecord",
-                                  "#4CAF50" if running else "#888"),
-            ]:
-                with mui.Grid(item=True, xs=3):
-                    with mui.Card(elevation=3, sx={
-                        "bgcolor": CARD_BG, "borderRadius": 2,
-                        "borderLeft": f"4px solid {color}",
-                    }):
-                        with mui.CardContent(sx={"pb": "12px !important", "pt": 1.5}):
-                            with mui.Box(sx={"display":"flex","alignItems":"center","gap":1}):
-                                getattr(mui.icon, icon_name)(sx={"color": color, "fontSize": 20})
-                                mui.Typography(label, variant="caption",
-                                               sx={"color": "#888", "textTransform": "uppercase",
-                                                   "letterSpacing": 1})
-                            mui.Typography(str(value), variant="h4",
-                                           sx={"fontWeight": 700, "color": "#fff", "mt": 0.5})
+    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+    feed_col, ctrl_col = st.columns([2.4, 1], gap="large")
 
-    # ── Model mode banner ────────────────────────────────────────────────────
-    if _has_custom:
-        st.success(f"🟢 Custom model loaded — grading active ({Path(_cp).name})")
-    else:
-        st.info("🔵 **YOLO11n-seg** running in detection-only mode — "
-                "all detections labelled **onion**. "
-                "Add your trained model in ⚙️ Settings to enable grading.")
-
-    # ── Feed (left) | Controls (right) ──────────────────────────────────────
-    feed_col, ctrl_col = st.columns([2.2, 1], gap="medium")
-
-    # RIGHT — Controls
     with ctrl_col:
-        st.subheader("Source")
-        source_type = st.radio("Input type", ["Camera", "Video File"],
-                               horizontal=True, label_visibility="collapsed")
-
+        _section("Input Source")
+        st.radio("Type", ["Camera", "Video File"],
+                 horizontal=True, label_visibility="collapsed", key="source_type")
+        source_type = st.session_state.source_type
         if source_type == "Camera":
-            if st.button("📷 Scan cameras", key="scan_btn",
-                         help="Tests indices 0–4"):
+            if st.button("Scan for Cameras", key="scan_btn", use_container_width=True):
                 found = []
-                for idx in range(5):
-                    cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-                    if cap.isOpened():
-                        ret, _ = cap.read()
-                        if ret:
-                            found.append(idx)
-                    cap.release()
+                with st.spinner("Scanning indices 0–4…"):
+                    for idx in range(5):
+                        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                        if cap.isOpened():
+                            ret, _ = cap.read()
+                            if ret: found.append(idx)
+                        cap.release()
                 st.session_state["cam_scan"] = found
             scan = st.session_state.get("cam_scan")
             if scan is not None:
-                if scan:
-                    st.success(f"Available: {scan}")
-                else:
-                    st.warning("No cameras found. Try a video file.")
-            cam1_val = st.text_input("Camera 1 index", value=st.session_state.cam1_idx,
-                                     help="0 = built-in webcam, 1 = first USB cam")
-            st.session_state.cam1_idx = cam1_val
-            source1 = cam1_val
+                if scan: st.success(f"Available: index {scan}")
+                else:    st.warning("No cameras detected.")
+            st.text_input("Camera 1 Index", key="cam1_idx",
+                          help="0 = built-in  /  1 = first USB camera")
+            source1 = st.session_state.cam1_idx
         else:
-            vpath = st.text_input("Video file path", value=st.session_state.video_path,
-                                  placeholder=r"C:\Videos\onion_demo.mp4")
-            st.session_state.video_path = vpath
-            source1 = vpath if vpath else None
+            # Drag-and-drop upload (saves to project videos/ folder)
+            uploaded = st.file_uploader(
+                "Drop video here", type=["mp4", "avi", "mov", "mkv", "webm"],
+                label_visibility="collapsed",
+            )
+            if uploaded is not None:
+                _save_path = _PROJECT / "videos" / uploaded.name
+                _PROJECT.joinpath("videos").mkdir(exist_ok=True)
+                _save_path.write_bytes(uploaded.getbuffer())
+                st.session_state.video_path = str(_save_path)
+                st.success(f"Saved: {uploaded.name}")
+            st.text_input("Or enter path", key="video_path",
+                          placeholder=r"C:\Videos\belt.mp4")
+            source1 = st.session_state.video_path if st.session_state.video_path else None
             if source1 and not Path(source1).exists():
-                st.warning("File not found — check the path.")
+                st.warning("File not found.")
 
-        cam2_enabled = st.checkbox("Enable Camera 2", value=st.session_state.cam2_enabled)
-        st.session_state.cam2_enabled = cam2_enabled
-        if cam2_enabled:
-            cam2_val = st.text_input("Camera 2 index" if source_type == "Camera" else "Video 2 path",
-                                     value=st.session_state.cam2_source)
-            st.session_state.cam2_source = cam2_val
-            source2 = cam2_val if cam2_val else None
+        st.checkbox("Enable Camera 2 / second source", key="cam2_enabled")
+        if st.session_state.cam2_enabled:
+            st.text_input(
+                "Camera 2 Index" if source_type == "Camera" else "Video 2 Path",
+                key="cam2_source",
+            )
+            source2 = st.session_state.cam2_source if st.session_state.cam2_source else None
         else:
             source2 = None
 
-        # Source-changed warning
-        _s1 = str(source1) if source1 is not None else None
-        _s2 = str(source2) if source2 is not None else None
-        source_changed = running and (
-            _state.get("source1") != _s1 or _state.get("source2") != _s2
-        )
-        if source_changed:
-            st.warning("Source changed — click **Restart** to switch.")
+        _s1 = str(source1).strip() if source1 else None
+        _s2 = str(source2).strip() if source2 else None
+        if running and (_state.get("source1") != _s1 or _state.get("source2") != _s2):
+            st.warning("Source changed — click Restart to apply.")
 
-        st.divider()
-
-        # Start / Stop / Restart
+        _section("Pipeline Control")
         b1, b2, b3 = st.columns(3)
+        # Valid source = non-empty string that isn't literally "None"
+        _source_ok = bool(_s1 and _s1 not in ("", "None"))
         with b1:
-            if st.button("▶ Start", disabled=running, use_container_width=True, type="primary"):
+            if st.button("Start", disabled=(running or not _source_ok),
+                         use_container_width=True, type="primary"):
                 s = load_settings()
-                s["_batch_id"] = st.session_state.batch_id
-                s["_farmer"]   = st.session_state.farmer_name
-                _start_pipeline(source1, source2, s, db)
-                st.rerun()
+                s["_batch_id"] = "DEMO"
+                _start_pipeline(source1, source2, s, db); st.rerun()
         with b2:
-            if st.button("⏹ Stop", disabled=not running, use_container_width=True):
-                _stop_pipeline()
-                st.rerun()
+            if st.button("Stop", disabled=not running, use_container_width=True):
+                _stop_pipeline(); st.rerun()
         with b3:
-            if st.button("🔄", disabled=not running, use_container_width=True,
-                         help="Restart with current source"):
+            if st.button("Restart", disabled=not running, use_container_width=True,
+                         help="Restart with current source settings"):
                 s = load_settings()
-                s["_batch_id"] = st.session_state.batch_id
-                s["_farmer"]   = st.session_state.farmer_name
-                _restart_pipeline(source1, source2, s, db)
-                st.rerun()
+                s["_batch_id"] = "DEMO"
+                _restart_pipeline(source1, source2, s, db); st.rerun()
+
+        if st.button("Reset Count", use_container_width=True,
+                     disabled=not running,
+                     help="Zero the frame counter and unique track IDs mid-run"):
+            with _lock:
+                _state["reset_requested"] = True
 
         if _state.get("error"):
-            st.error(f"Error: {_state['error']}")
+            st.error(f"Pipeline error: {_state['error']}")
 
-        st.divider()
-        st.subheader("Detection Controls")
-        s_live = load_settings()
-        conf    = st.slider("Confidence",    0.10, 0.95,
-                            float(s_live.get("confidence_threshold", 0.35)), 0.05)
-        iou_val = st.slider("IoU threshold", 0.10, 0.95,
+        _section("Detection Parameters")
+        s_live  = load_settings()
+        conf    = st.slider("Confidence", 0.10, 0.95,
+                            float(s_live.get("confidence_threshold", 0.50)), 0.05)
+        iou_val = st.slider("NMS IoU",    0.10, 0.95,
                             float(s_live.get("iou_threshold", 0.45)), 0.05)
-        show_ov = st.checkbox("Show overlap zone",
+        show_ov = st.checkbox("Show overlap zone overlay",
                               value=bool(s_live.get("show_overlap_preview", True)))
         if st.button("Apply", use_container_width=True):
-            save_settings({
-                "confidence_threshold": conf,
-                "iou_threshold": iou_val,
-                "show_overlap_preview": show_ov,
-            })
-            st.toast("Applied — takes effect on next frame.")
+            save_settings({"confidence_threshold": conf,
+                           "iou_threshold": iou_val,
+                           "show_overlap_preview": show_ov})
+            st.toast("Parameters saved.")
 
-    # LEFT — Video Feed
     with feed_col:
-        frame1_ph = st.empty()
-        frame2_ph = st.empty()
-        with _lock:
-            f1 = _state.get("frame1")
-            f2 = _state.get("frame2")
-
-        if f1 is not None:
-            frame1_ph.image(cv2.cvtColor(f1, cv2.COLOR_BGR2RGB),
-                            caption="Camera 1 ✅ Live" if _state.get("cam1_open")
-                            else "Camera 1 ⚠️ No signal",
-                            use_container_width=True)
+        if _state.get("loading"):
+            st.warning(f"⏳ {_state.get('loading_msg', 'Initialising pipeline…')} "
+                       "This may take up to 30 s on first run.")
+        elif _has_custom:
+            _model_name = Path(_cp).stem
+            st.success(f"Model: **{_model_name}** — ByteTrack active. HSV heuristic disabled.")
         else:
-            frame1_ph.info("📷 Camera 1 — press **▶ Start** to begin.\n\n"
-                           "Not sure which index? Click **📷 Scan cameras** first.")
+            st.info(
+                "No custom model — using YOLO11n + HSV heuristic. "
+                "Load a trained model in Configuration to enable grade classification."
+            )
 
-        if f2 is not None:
-            frame2_ph.image(cv2.cvtColor(f2, cv2.COLOR_BGR2RGB),
-                            caption="Camera 2 ✅ Live" if _state.get("cam2_open")
-                            else "Camera 2 ⚠️ No signal",
-                            use_container_width=True)
-        elif cam2_enabled:
-            frame2_ph.info("Camera 2 — waiting for pipeline to start.")
+        # ── WebRTC path (smoothest — if streamlit-webrtc installed) ──────────
+        if _WEBRTC_OK and source1 and not running:
+            # WebRTC streams MP4 through aiortc.MediaPlayer → VideoProcessor
+            # → browser at true 30 FPS without any MJPEG or Streamlit rerun.
+            from ultralytics import YOLO as _YOLO
+
+            _s = load_settings()
+            _pt  = _s.get("model_path", "")
+            _eng = Path(_pt).with_suffix(".engine") if _pt else None
+            _mdl_path = str(_eng) if (_eng and _eng.exists()) \
+                        else (_pt if _pt and Path(_pt).exists() else "yolo11n-seg.pt")
+            _wconf = float(_s.get("confidence_threshold", 0.30))
+            _wiou  = float(_s.get("iou_threshold", 0.45))
+
+            @st.cache_resource
+            def _load_webrtc_model(path):
+                return _YOLO(path)
+
+            _wmodel = _load_webrtc_model(_mdl_path)
+
+            class _OnionProcessor(VideoProcessorBase):
+                def recv(self, frame: "av.VideoFrame") -> "av.VideoFrame":
+                    img = frame.to_ndarray(format="bgr24")
+                    img = cv2.resize(img, (640, 640))
+                    try:
+                        results = _wmodel.track(
+                            img, conf=_wconf, iou=_wiou, imgsz=640,
+                            persist=True, tracker="bytetrack.yaml", verbose=False,
+                        )
+                    except Exception:
+                        results = _wmodel.predict(img, conf=_wconf, iou=_wiou,
+                                                  imgsz=640, verbose=False)
+                    boxes = results[0].boxes
+                    if boxes is not None and len(boxes.xyxy) > 0:
+                        tids = None
+                        if hasattr(boxes, "id") and boxes.id is not None:
+                            try: tids = [int(boxes.id[i].item()) for i in range(len(boxes.id))]
+                            except Exception: pass
+                        for i, xyxy in enumerate(boxes.xyxy):
+                            x1,y1,x2,y2 = [int(v) for v in xyxy]
+                            w,h = x2-x1, y2-y1
+                            if w<10 or h<10: continue
+                            if w>384 or h>384: continue
+                            ar = w/max(h,1)
+                            if not (0.25 <= ar <= 4.0): continue
+                            tid = tids[i] if tids and i<len(tids) else -1
+                            cf  = float(boxes.conf[i])
+                            cv2.rectangle(img,(x1,y1),(x2,y2),(0,200,60),2)
+                            lbl = f"#{tid} {cf:.0%}"
+                            (tw,th),_ = cv2.getTextSize(lbl,cv2.FONT_HERSHEY_SIMPLEX,0.5,1)
+                            cv2.rectangle(img,(x1,y1-th-8),(x1+tw+4,y1),(0,200,60),-1)
+                            cv2.putText(img,lbl,(x1+2,y1-4),
+                                        cv2.FONT_HERSHEY_SIMPLEX,0.5,(255,255,255),1)
+                    return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+            try:
+                from aiortc.contrib.media import MediaPlayer as _MediaPlayer
+                _src1 = str(source1)
+
+                def _player_factory():
+                    return _MediaPlayer(_src1)
+
+                webrtc_streamer(
+                    key=f"onion-{Path(_src1).name}",
+                    mode=WebRtcMode.RECVONLY,
+                    player_factory=_player_factory,
+                    video_processor_factory=_OnionProcessor,
+                    media_stream_constraints={"video": True, "audio": False},
+                    async_processing=True,
+                )
+            except Exception as _we:
+                st.warning(f"WebRTC unavailable ({_we}) — using MJPEG fallback.")
+                _WEBRTC_OK_LOCAL = False
+            else:
+                _WEBRTC_OK_LOCAL = True
+        else:
+            _WEBRTC_OK_LOCAL = False
+
+        # ── MJPEG fallback (pipeline running or webrtc not available) ─────────
+        if not _WEBRTC_OK or _WEBRTC_OK_LOCAL is False or running:
+            if running or _state.get("frame1") is not None:
+                # Label is static — dynamic FPS/frame info is drawn by cv2.putText
+                # on the frame itself. Changing the HTML string would reload the
+                # iframe on every Streamlit rerun, disconnecting the MJPEG stream.
+                st.components.v1.html(
+                    _video_html(_MJPEG_PORT, 1, "Camera 1", h=500),
+                    height=514,
+                )
+            else:
+                st.markdown(f"""
+                <div style="background:{T['card_bg']};border:1px dashed {T['border']};
+                            border-radius:6px;padding:60px 40px;text-align:center;
+                            box-shadow:0px 1px 2px 0px {T['elev_1']}">
+                  <div style="font-weight:600;color:{T['text']};margin-bottom:6px;
+                              font-family:Inter,sans-serif">Camera feed not active</div>
+                  <div style="font-size:0.82rem;color:{T['text_muted']};font-family:Inter,sans-serif">
+                    Select a video file or camera index, then click
+                    <strong>Start</strong>.
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — Analytics
-# ═══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_analytics:
-    batch_id = st.session_state.batch_id
-    summary  = db.get_batch_summary(batch_id)
+    summary  = st.session_state.get("_db_summary", {"total": 0, "counts": {}, "defects": {}})
     total_s  = summary["total"]
     counts   = summary.get("counts", {})
     defects  = summary.get("defects", {})
-    rows     = db.get_recent(n=200, batch_id=batch_id)
-
+    rows     = st.session_state.get("_db_recent", [])
     reject_n = sum(1 for r in rows if r.get("final_grade") == "reject")
     a_n      = sum(1 for r in rows if r.get("final_grade") == "grade_a")
     dias     = [r["estimated_diameter_mm"] for r in rows if r.get("estimated_diameter_mm")]
 
-    # Summary metric cards (Material UI)
-    with elements("analytics_metrics"):
-        with mui.Grid(container=True, spacing=2, sx={"mb": 2}):
-            for label, value, color in [
-                ("Total Graded",  total_s, PRIMARY),
-                ("Grade A",
-                 f"{a_n/total_s*100:.1f}%" if total_s else "—", "#4CAF50"),
-                ("Reject Rate",
-                 f"{reject_n/total_s*100:.1f}%" if total_s else "—", "#F44336"),
-                ("Avg Diameter",
-                 f"{sum(dias)/len(dias):.1f} mm" if dias else "—", "#2196F3"),
-            ]:
-                with mui.Grid(item=True, xs=3):
-                    with mui.Card(elevation=3, sx={
-                        "bgcolor": CARD_BG, "borderRadius": 2,
-                        "borderTop": f"3px solid {color}",
-                    }):
-                        with mui.CardContent(sx={"pb": "12px !important"}):
-                            mui.Typography(label, variant="caption",
-                                           sx={"color": "#888", "textTransform": "uppercase"})
-                            mui.Typography(str(value), variant="h5",
-                                           sx={"fontWeight": 700, "color": "#fff"})
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Graded", total_s)
+    k2.metric("Grade A",      f"{a_n/total_s*100:.1f}%"      if total_s else "—")
+    k3.metric("Reject Rate",  f"{reject_n/total_s*100:.1f}%" if total_s else "—")
+    k4.metric("Avg Diameter", f"{sum(dias)/len(dias):.1f} mm" if dias else "—")
+
+    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
 
     if total_s == 0:
-        st.info("No data yet for this batch. Start the pipeline and run onions through.")
+        _empty_state(
+            "No records yet",
+            "Start the pipeline and run onions through the belt to generate data.",
+            T,
+        )
     else:
-        # Nivo charts inside a draggable dashboard
-        nivo_layout = [
-            dashboard.Item("grade_chart",  0, 0, 6, 5),
-            dashboard.Item("defect_chart", 6, 0, 6, 5),
-        ]
-        with elements("analytics_charts"):
-            with dashboard.Grid(nivo_layout, draggableHandle=".drag-handle"):
+        c1, c2 = st.columns(2)
+        with c1:
+            if counts:
+                st.plotly_chart(_bar_chart(counts, "Grade Distribution", T),
+                                use_container_width=True, config={"displayModeBar": False})
+        with c2:
+            src = defects if defects else counts
+            if src:
+                st.plotly_chart(
+                    _pie_chart(src, "Defect Breakdown" if defects else "Grade Share", T),
+                    use_container_width=True, config={"displayModeBar": False},
+                )
 
-                # Grade distribution bar chart
-                with mui.Card(key="grade_chart", elevation=3,
-                              sx={"bgcolor": CARD_BG, "borderRadius": 2, "height": "100%"}):
-                    with mui.CardContent(sx={"height": "100%"}):
-                        with mui.Box(className="drag-handle", sx={
-                            "display": "flex", "alignItems": "center",
-                            "cursor": "move", "mb": 1,
-                        }):
-                            mui.icon.DragIndicator(sx={"color": "#555", "mr": 1})
-                            mui.Typography("Grade Distribution", variant="subtitle1",
-                                           sx={"fontWeight": 600, "color": "#fff"})
-
-                        bar_data = [
-                            {
-                                "Grade": k.replace("_", " ").title(),
-                                "Count": v,
-                                "color": GRADE_HEX.get(k, "#888"),
-                            }
-                            for k, v in counts.items() if v > 0
-                        ]
-                        if bar_data:
-                            nivo.Bar(
-                                data=bar_data,
-                                keys=["Count"],
-                                indexBy="Grade",
-                                margin={"top": 10, "right": 10, "bottom": 70, "left": 50},
-                                padding=0.35,
-                                colors={"datum": "data.color"},
-                                axisBottom={
-                                    "tickRotation": -35,
-                                    "legend": "Grade",
-                                    "legendOffset": 60,
-                                    "legendPosition": "middle",
-                                },
-                                axisLeft={
-                                    "legend": "Count",
-                                    "legendOffset": -40,
-                                    "legendPosition": "middle",
-                                },
-                                enableLabel=True,
-                                labelSkipHeight=8,
-                                theme=NIVO_THEME,
-                                animate=True,
-                            )
-
-                # Defect breakdown pie chart
-                with mui.Card(key="defect_chart", elevation=3,
-                              sx={"bgcolor": CARD_BG, "borderRadius": 2, "height": "100%"}):
-                    with mui.CardContent(sx={"height": "100%"}):
-                        with mui.Box(className="drag-handle", sx={
-                            "display": "flex", "alignItems": "center",
-                            "cursor": "move", "mb": 1,
-                        }):
-                            mui.icon.DragIndicator(sx={"color": "#555", "mr": 1})
-                            mui.Typography(
-                                "Defect Breakdown" if defects else "Grade Breakdown",
-                                variant="subtitle1", sx={"fontWeight": 600, "color": "#fff"},
-                            )
-
-                        pie_data_src = defects if defects else counts
-                        pie_data = [
-                            {"id": k.replace("_", " ").title(),
-                             "label": k.replace("_", " ").title(),
-                             "value": v,
-                             "color": GRADE_HEX.get(k, "#888")}
-                            for k, v in pie_data_src.items() if v > 0
-                        ]
-                        if pie_data:
-                            nivo.Pie(
-                                data=pie_data,
-                                margin={"top": 10, "right": 80, "bottom": 50, "left": 80},
-                                innerRadius=0.5,
-                                padAngle=1.5,
-                                cornerRadius=4,
-                                colors={"datum": "data.color"},
-                                enableArcLinkLabels=True,
-                                arcLinkLabelsColor={"from": "color"},
-                                arcLabelsSkipAngle=10,
-                                theme=NIVO_THEME,
-                                legends=[{
-                                    "anchor": "bottom",
-                                    "direction": "row",
-                                    "translateY": 45,
-                                    "itemWidth": 90,
-                                    "itemHeight": 18,
-                                    "symbolSize": 12,
-                                    "symbolShape": "circle",
-                                }],
-                            )
-
-        st.divider()
-        st.subheader("Recent Detections")
+        _section("Recent Detections")
         if rows:
-            df = pd.DataFrame(rows[:50])
+            df = pd.DataFrame(rows[:60])
             dcols = [c for c in [
                 "global_id", "final_grade", "defect_type",
                 "estimated_diameter_mm", "cam1_confidence",
@@ -706,154 +1230,176 @@ with tab_analytics:
             ] if c in df.columns]
             df_disp = df[dcols].copy()
             df_disp.columns = [c.replace("_", " ").title() for c in dcols]
-            st.dataframe(df_disp, use_container_width=True, height=300)
-
-        if st.session_state.farmer_name:
-            st.divider()
-            st.subheader(f"Farmer Profile — {st.session_state.farmer_name}")
-            fp = db.get_farmer_fingerprint(st.session_state.farmer_name)
-            if fp["total"] > 0:
-                with elements("farmer_cards"):
-                    with mui.Grid(container=True, spacing=2):
-                        for lbl, val, color in [
-                            ("All-time Onions", fp["total"],            PRIMARY),
-                            ("Sessions",        fp["sessions"],         "#2196F3"),
-                            ("Reject Rate",     f"{fp['reject_rate_pct']}%", "#F44336"),
-                            ("Grade A Rate",    f"{fp['grade_a_rate_pct']}%","#4CAF50"),
-                        ]:
-                            with mui.Grid(item=True, xs=3):
-                                with mui.Card(elevation=2, sx={
-                                    "bgcolor": CARD_BG, "borderRadius": 2,
-                                    "borderLeft": f"4px solid {color}",
-                                }):
-                                    with mui.CardContent(sx={"pb": "12px !important"}):
-                                        mui.Typography(lbl, variant="caption", sx={"color":"#888"})
-                                        mui.Typography(str(val), variant="h5",
-                                                       sx={"fontWeight":700,"color":"#fff"})
+            st.dataframe(df_disp, use_container_width=True, height=280)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — Disputes
-# ═══════════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Dispute Review
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_disputes:
-    st.subheader("Camera Disagreements")
-    disputed = db.get_disputed(batch_id=st.session_state.batch_id)
+    st.markdown(f"""
+    <div style="font-size:0.82rem;color:{T['text_muted']};margin-bottom:16px;
+                font-family:Inter,sans-serif">
+      Records where Camera 1 and Camera 2 assigned different grades to the same onion.
+      Final grade follows worst-case logic.
+    </div>
+    """, unsafe_allow_html=True)
+
+    disputed = st.session_state.get("_db_disputed", [])
     if not disputed:
-        st.info("No disputed onions (cam1 ≠ cam2 grade) in this batch.")
+        st.markdown(f"""
+        <div style="background:{T['success_bg']};border:1px solid {T['success_bdr']};
+                    border-left:3px solid {T['success']};border-radius:6px;
+                    padding:36px;text-align:center;
+                    box-shadow:0px 1px 2px 0px {T['elev_1']}">
+          <div style="font-weight:600;color:{T['success']};margin-bottom:4px;
+                      font-family:Inter,sans-serif">No disputes in this batch</div>
+          <div style="font-size:0.82rem;color:{T['text_muted']};font-family:Inter,sans-serif">
+            Both cameras agreed on grade for all processed onions.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        st.caption(f"{len(disputed)} disputed onion(s).")
+        st.warning(f"{len(disputed)} disputed record(s) — batch {st.session_state.batch_id}")
         ids = [r["global_id"] for r in disputed]
-        sel = st.selectbox("Select global_id", ids)
+        sel = st.selectbox("Select Onion ID", ids, format_func=lambda x: f"Onion #{x}")
         row = next((r for r in disputed if r["global_id"] == sel), None)
         if row:
-            with elements("dispute_cards"):
-                with mui.Grid(container=True, spacing=2, sx={"mb": 2}):
-                    for lbl, val, color in [
-                        ("Camera 1",  (row.get("cam1_grade") or "—").upper(), "#2196F3"),
-                        ("Camera 2",  (row.get("cam2_grade") or "—").upper(), "#FF9800"),
-                        ("Final",     (row.get("final_grade") or "—").upper(), "#4CAF50"),
-                    ]:
-                        with mui.Grid(item=True, xs=4):
-                            with mui.Card(elevation=3, sx={
-                                "bgcolor": CARD_BG, "borderRadius": 2,
-                                "borderTop": f"3px solid {color}",
-                            }):
-                                with mui.CardContent():
-                                    mui.Typography(lbl, variant="caption", sx={"color":"#888"})
-                                    mui.Typography(val, variant="h5",
-                                                   sx={"fontWeight":700,"color":"#fff"})
-            img_cols = st.columns(3)
+            dc1, dc2, dc3 = st.columns(3)
+            dc1.metric("Camera 1", (row.get("cam1_grade") or "—").replace("_", " ").upper())
+            dc2.metric("Camera 2", (row.get("cam2_grade") or "—").replace("_", " ").upper())
+            dc3.metric("Final",    (row.get("final_grade") or "—").replace("_", " ").upper())
+            st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+            ic1, ic2, ic3 = st.columns(3)
             for col, key, label in zip(
-                img_cols,
+                [ic1, ic2, ic3],
                 ["cam1_path", "cam2_path", "overlay_path"],
-                ["Camera 1 Frame", "Camera 2 Frame", "Grad-CAM Overlay"],
+                ["Camera 1 Frame", "Camera 2 Frame", "Activation Map"],
             ):
                 p = row.get(key)
                 if p and os.path.exists(p):
-                    img = cv2.imread(p)
-                    col.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
+                    col.image(cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB),
                               caption=label, use_container_width=True)
                 else:
-                    col.caption(f"{label}: not yet available")
+                    col.markdown(f"""
+                    <div style="background:{T['card_bg']};border:1px dashed {T['border']};
+                                border-radius:6px;padding:28px;text-align:center;
+                                font-size:0.78rem;color:{T['text_muted']};
+                                font-family:Inter,sans-serif">
+                      {label}<br>Not available
+                    </div>
+                    """, unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — Settings
-# ═══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — Configuration
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_settings:
     s = load_settings()
 
-    st.subheader("Model")
-    model_path  = st.text_input("Model path (.pt)", value=s.get("model_path", ""),
-                                help="Path to your trained weights. Classes auto-detected.")
+    _section("Model")
+    mc1, mc2 = st.columns(2)
+    model_path = mc1.text_input(
+        "Custom Model Path (.pt)",
+        value=s.get("model_path", ""),
+        help="Absolute path to your trained YOLO11 weights (e.g. models/best.pt). "
+             "Leave blank to use YOLO11n-seg (auto-downloaded, detection-only).",
+    )
+    data_yaml = mc2.text_input(
+        "Dataset YAML (data.yaml)",
+        value=s.get("data_yaml", ""),
+        placeholder="dataset/data.yaml",
+        help="Path to the data.yaml from your training dataset. "
+             "Provides class names (Grade A / B / Reject …) to the pipeline. "
+             "Export format: YOLOv11 or YOLOv8 from Roboflow.",
+    )
     model_exists = Path(model_path).exists() if model_path else False
-    st.caption("✅ File found — custom model will load on next Start"
-               if model_exists else "⚠️ Not found — YOLO11n-seg (detection-only) active")
+    yaml_exists  = Path(data_yaml).exists()  if data_yaml  else False
+    if model_path:
+        if model_exists: st.success("Model file found — grading activates on next Start.")
+        else:            st.warning("File not found — YOLO11n-seg (detection-only) will be used.")
+    if data_yaml:
+        if yaml_exists:
+            try:
+                import yaml as _yaml
+                _dy = _yaml.safe_load(open(data_yaml))
+                _nc   = _dy.get("nc", "?")
+                _names = list(_dy.get("names", {}).values()) \
+                         if isinstance(_dy.get("names"), dict) \
+                         else _dy.get("names", [])
+                st.info(f"YAML OK — {_nc} classes: {', '.join(str(n) for n in _names[:8])}"
+                        + (" …" if len(_names) > 8 else ""))
+            except Exception as ex:
+                st.warning(f"YAML parse error: {ex}")
+        else:
+            st.warning("YAML file not found.")
 
-    _default_pt = str(_PROJECT / "models" / "yolo11n-seg.pt")
-    yolo_exists = Path(_default_pt).exists() or Path("yolo11n-seg.pt").exists()
-    if not yolo_exists:
-        if st.button("⬇ Download yolo11n-seg.pt (~6 MB)"):
+    if not Path("yolo11n-seg.pt").exists() and \
+       not (Path(_PROJECT / "models" / "yolo11n-seg.pt")).exists():
+        if st.button("Download YOLO11n-seg weights (~6 MB)", type="primary"):
             with st.spinner("Downloading…"):
                 try:
                     from ultralytics import YOLO
-                    (_PROJECT / "models").mkdir(exist_ok=True)
                     YOLO("yolo11n-seg.pt")
-                    st.success("Downloaded. It will be used automatically on next Start.")
+                    st.success("Downloaded successfully.")
                 except Exception as ex:
                     st.error(f"Download failed: {ex}")
 
-    st.divider()
-    st.subheader("Overlap Zone — Camera 1")
-    ov1s = st.slider("Cam1 Start X", 0, 1280, int(s.get("overlap_start_cam1_x", 900)), 10)
-    ov1e = st.slider("Cam1 End X",   0, 1280, int(s.get("overlap_end_cam1_x",   1280)), 10)
-    st.subheader("Overlap Zone — Camera 2")
-    ov2s = st.slider("Cam2 Start X", 0, 1280, int(s.get("overlap_start_cam2_x", 0)),   10)
-    ov2e = st.slider("Cam2 End X",   0, 1280, int(s.get("overlap_end_cam2_x",   380)), 10)
+    _section("Overlap Zone — Camera 1")
+    col_a, col_b = st.columns(2)
+    ov1s = col_a.slider("Start X (px)", 0, 1280, int(s.get("overlap_start_cam1_x", 900)),  10, key="ov1s")
+    ov1e = col_b.slider("End X (px)",   0, 1280, int(s.get("overlap_end_cam1_x",   1280)), 10, key="ov1e")
 
-    st.divider()
-    st.subheader("Belt & Ejector")
-    belt_spd = st.slider("Belt speed (m/s)",     0.10, 1.0,
-                         float(s.get("belt_speed_ms", 0.3)), 0.05)
-    eject_d  = st.slider("Ejector distance (m)", 0.10, 2.0,
-                         float(s.get("ejector_distance_m", 0.45)), 0.05)
-    st.caption(f"Ejector delay: **{eject_d/max(belt_spd,0.01):.2f} s**")
-    simulated = st.checkbox("Simulated ejector",
-                            value=bool(s.get("simulated_ejector", True)))
+    _section("Overlap Zone — Camera 2")
+    col_c, col_d = st.columns(2)
+    ov2s = col_c.slider("Start X (px)", 0, 1280, int(s.get("overlap_start_cam2_x", 0)),   10, key="ov2s")
+    ov2e = col_d.slider("End X (px)",   0, 1280, int(s.get("overlap_end_cam2_x",   380)), 10, key="ov2e")
 
-    st.divider()
-    st.subheader("Cross-Camera Matching")
-    match_iou = st.slider("IoU threshold",  0.10, 0.80,
-                          float(s.get("cross_cam_iou_threshold", 0.30)), 0.05)
-    match_win = st.slider("Time window (s)", 0.5, 10.0,
-                          float(s.get("match_time_window_s", 2.0)), 0.5)
+    _section("Belt & Ejector")
+    col_e, col_f = st.columns(2)
+    belt_spd = col_e.slider("Belt Speed (m/s)",     0.10, 1.0,
+                             float(s.get("belt_speed_ms",       0.3)),  0.05)
+    eject_d  = col_f.slider("Ejector Distance (m)", 0.10, 2.0,
+                             float(s.get("ejector_distance_m", 0.45)), 0.05)
+    st.info(f"Ejector delay: {eject_d / max(belt_spd, 0.01):.2f} s  ({eject_d} m / {belt_spd} m/s)")
+    simulated = st.checkbox(
+        "Simulated ejector (logging only — uncheck for real serial/GPIO)",
+        value=bool(s.get("simulated_ejector", True)),
+    )
 
-    st.divider()
-    st.subheader("Size Estimation")
-    cal = st.slider("Calibration factor (mm²/px)", 0.001, 0.10,
+    _section("Cross-Camera Matching")
+    col_g, col_h = st.columns(2)
+    match_iou = col_g.slider("IoU Threshold",  0.10, 0.80,
+                              float(s.get("cross_cam_iou_threshold", 0.30)), 0.05)
+    match_win = col_h.slider("Time Window (s)", 0.5, 10.0,
+                              float(s.get("match_time_window_s",    2.0)),  0.5)
+
+    _section("Size Estimation")
+    cal = st.slider("Calibration Factor (mm/pixel)", 0.001, 0.10,
                     float(s.get("calibration_factor", 0.014)), 0.001, format="%.3f")
+    st.caption("Run calibration.py with a reference object of known diameter to compute this value.")
 
-    sc1, sc2 = st.columns(2)
-    if sc1.button("💾 Save Settings", use_container_width=True, type="primary"):
+    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+    sa, sb = st.columns(2)
+    if sa.button("Save Configuration", use_container_width=True, type="primary"):
         save_settings({
-            "model_path": model_path,
-            "overlap_start_cam1_x": ov1s, "overlap_end_cam1_x": ov1e,
-            "overlap_start_cam2_x": ov2s, "overlap_end_cam2_x": ov2e,
-            "belt_speed_ms": belt_spd, "ejector_distance_m": eject_d,
-            "simulated_ejector": simulated,
+            "model_path":              model_path,
+            "data_yaml":               data_yaml,
+            "overlap_start_cam1_x":    ov1s, "overlap_end_cam1_x": ov1e,
+            "overlap_start_cam2_x":    ov2s, "overlap_end_cam2_x": ov2e,
+            "belt_speed_ms":           belt_spd, "ejector_distance_m": eject_d,
+            "simulated_ejector":       simulated,
             "cross_cam_iou_threshold": match_iou,
-            "match_time_window_s": match_win,
-            "calibration_factor": cal,
+            "match_time_window_s":     match_win,
+            "calibration_factor":      cal,
         })
-        st.success("Settings saved. Restart pipeline to apply.")
-    if sc2.button("↺ Reset Defaults", use_container_width=True):
+        st.success("Configuration saved. Restart pipeline to apply changes.")
+    if sb.button("Reset to Defaults", use_container_width=True):
         reset_settings()
-        st.info("Defaults restored.")
+        st.info("Settings reset to defaults.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Auto-refresh
-# ─────────────────────────────────────────────────────────────────────────────
-refresh_ms = 150 if _state.get("running") else 2000
-time.sleep(refresh_ms / 1000)
+# ── Auto-refresh ───────────────────────────────────────────────────────────────
+time.sleep(0.5 if _state.get("running") else 2.0)
 st.rerun()

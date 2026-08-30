@@ -1,46 +1,47 @@
-# 🧅 OnionIQ — AI-Powered Onion Quality Grading System
+# OnionIQ — AI-Powered Onion Quality Grading System
 
 > **Smart India Hackathon 2026 · Problem Statement SIH26031**  
 > Ministry of Consumer Affairs, Food & Public Distribution
 
-OnionIQ is a real-time, dual-camera onion grading system that runs on a roller conveyor belt. It uses YOLO11n-seg for detection and segmentation, ByteTrack for per-camera tracking, cross-camera IoU matching to avoid counting the same onion twice, and worst-case grading logic to assign a final grade. All data is stored locally in SQLite and synced to a central server when WiFi is available — designed for rural APMC mandis with intermittent connectivity.
+OnionIQ is a real-time onion detection and counting system that runs on a roller conveyor belt. It uses a custom-trained YOLO11 model with ByteTrack for persistent tracking, served through a Streamlit dashboard with smooth MJPEG/WebRTC video streaming.
 
 ---
 
-## Demo
+## Quick Start
 
-| Live Demo | Analytics | Disputes |
-|---|---|---|
-| Real-time camera feed with bounding boxes, track IDs, grade labels | Nivo bar chart (grade distribution) + pie chart (defects), draggable | Cam1 vs Cam2 disagreement explorer with Grad-CAM overlay |
+### 1. Clone & install
 
----
+```bash
+git clone https://github.com/sakrish205/OnionIQ.git
+cd OnionIQ
+pip install -r requirements.txt
+```
 
-## Features
+For GPU (NVIDIA — recommended for 30+ FPS):
 
-### Core Pipeline
-- **YOLO11n-seg** — detection + segmentation on live camera or video file
-- **ByteTrack** — per-camera persistent tracking (falls back to centroid tracker)
-- **Cross-camera matching** — IoU-based global ID assignment across the overlap zone; each onion counted once
-- **Worst-case grading** — `final_grade = max(severity(cam1), severity(cam2))`
-- **Ejector control** — schedules ejection signal after configurable belt delay
+```bash
+# Check your CUDA version first
+nvidia-smi
 
-### Dashboard (Streamlit + Material UI)
-- **Live feed** with bounding boxes, track IDs, confidence scores, overlap zone overlay
-- **Source switcher** — camera index or video file; 🔄 Restart switches instantly without Stop
-- **📷 Scan cameras** — auto-detects available camera indices (0–4)
-- **Detection controls** — Confidence / IoU sliders applied live to the running pipeline
-- **Material UI metric cards** — Detected count, FPS, Active Tracks, Status
-- **Draggable Nivo charts** — Grade Distribution (bar) + Defect Breakdown (pie)
-- **⚙️ Settings panel** — all calibration constants editable at runtime, saved to `settings.json`
+# Install matching PyTorch (replace cu128 with your version)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128 --force-reinstall
+```
 
-### Novelty Features (as per SIH spec)
-| # | Feature | Implementation |
-|---|---|---|
-| 1 | Defect taxonomy | 10-class YOLO (grade_a/b/c + 7 defect types); defect field in DB + pie chart |
-| 2 | Size estimation | Mask area × calibration factor → diameter in mm; shown per detection |
-| 3 | Farmer fingerprint | Per-farmer aggregate stats (sessions, reject rate, grade-A rate) across batches |
-| 4 | Grad-CAM explainability | EigenCAM heatmap on disputed onions (cam1 ≠ cam2 grade) |
-| 5 | Offline-first sync | SQLite queue → HTTP POST when WiFi available; demo: disconnect WiFi, reconnect, watch sync |
+### 2. Run the dashboard
+
+```bash
+streamlit run dashboard.py
+```
+
+Open `http://localhost:8501` in your browser.
+
+### 3. Test without UI (fastest way to validate your model)
+
+```bash
+python test_detection.py
+```
+
+Press `Q` to quit, `SPACE` to pause, `S` for slow-motion. Results saved to `test_result.txt`.
 
 ---
 
@@ -48,124 +49,149 @@ OnionIQ is a real-time, dual-camera onion grading system that runs on a roller c
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     Streamlit Dashboard                  │
-│  Live Demo │ Analytics │ Disputes │ Settings             │
+│                 Streamlit Dashboard                      │
+│  Live Detection │ Analytics │ Disputes │ Configuration   │
+│                                                          │
+│  Video display: MJPEG server (port 5679) — no reruns     │
 └────────────────────────┬────────────────────────────────┘
-                         │ (background thread)
+                         │ background thread
 ┌────────────────────────▼────────────────────────────────┐
-│                   _PipelineWorker                        │
-│  Camera/Video ──► YOLO11n-seg ──► ByteTrack             │
-│                                      │                   │
-│        CrossCameraMatcher ◄──────────┘                   │
-│               │                                          │
-│        GradeDecisionEngine ──► SQLite (WAL)              │
-│               │                                          │
-│        EjectorController    SyncWorker (daemon)          │
+│                  _PipelineWorker                         │
+│                                                          │
+│  Reader thread ──► frame_q (maxsize=4)                   │
+│       │                │                                 │
+│  cv2.resize(640×640)   │                                 │
+│                        ▼                                 │
+│              model.track() — YOLO11 + ByteTrack          │
+│                        │                                 │
+│              _keep_box() filter                          │
+│              (rejects hands / people / giant blobs)      │
+│                        │                                 │
+│              annotate frame → _state["frame1"]           │
+│                        │                                 │
+│              MJPEG server (port 5679) ──► browser        │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ### File Structure
+
 ```
 OnionIQ/
-├── config.py          # All calibration constants + settings.json loader/saver
-├── utils.py           # DetectionEvent dataclass, bbox_iou, logging
+├── dashboard.py       # Streamlit app — all UI + pipeline worker
+├── test_detection.py  # Standalone CV test (no UI, fastest validation)
+├── model_wrapper.py   # OnionModel — YOLO loader, _keep() filter, TRT support
+├── config.py          # Settings loader/saver, grade class definitions
 ├── database.py        # SQLite WAL schema + thread-safe CRUD
-├── mock_model.py      # MockYOLO — same interface as ultralytics Results
-├── model_wrapper.py   # OnionModel — auto-downloads yolo11n-seg.pt; custom model hot-swap
-├── tracker.py         # ByteTrack wrapper + centroid tracker fallback
-├── camera.py          # CameraThread — frame queue with mock fallback
-├── matcher.py         # CrossCameraMatcher — IoU-based global ID assignment
-├── grader.py          # GradeDecisionEngine — worst-case logic + size estimation
-├── ejector.py         # EjectorController — simulated or real serial/GPIO
-├── grad_cam.py        # EigenCAM explainability for disputed onions
-├── sync.py            # SyncWorker — offline-first HTTP sync daemon
+├── tracker.py         # ByteTrack wrapper
+├── matcher.py         # Cross-camera IoU matcher (future multi-cam)
+├── grader.py          # Grade decision engine
+├── ejector.py         # Ejector controller (simulated or real serial/GPIO)
+├── grad_cam.py        # EigenCAM explainability for disputed detections
+├── sync.py            # Offline-first HTTP sync daemon
 ├── certificate.py     # ReportLab batch PDF certificate generator
-├── calibration.py     # Interactive HoughCircles calibration + overlap zone marking
-├── dashboard.py       # Streamlit app — self-contained, no separate main.py needed
-├── main.py            # CLI entrypoint for headless / two-laptop deployment
-└── requirements.txt
+├── calibration.py     # Camera calibration utility
+├── mock_model.py      # MockYOLO fallback (no GPU/model available)
+├── settings.json      # Runtime config (model path, confidence, overlap zones)
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## Quick Start
+## Loading Your Trained Model
 
-### 1. Clone & install
-```bash
-git clone https://github.com/sakrish205/OnionIQ.git
-cd OnionIQ
-pip install -r requirements.txt
-```
+1. Go to **Configuration** tab in the dashboard
+2. Paste the full path to your `.pt` file in **Custom Model Path**
+3. Paste the path to your `data.yaml` in **Dataset YAML**
+4. Click **Save Configuration**
+5. Click **Restart** in the Live Detection tab
 
-### 2. Run the dashboard
-```bash
-streamlit run dashboard.py
-```
-Open `http://localhost:8501` in your browser.
+The model loads automatically. With a custom model loaded:
+- HSV heuristic is **disabled** (YOLO output trusted directly)
+- ByteTrack tracking is **active**
+- Box color is **green** (same as `test_detection.py`)
 
-### 3. Start detection
-1. Go to **📹 Live Demo** tab
-2. Click **📷 Scan cameras** to find your camera index
-3. Enter the index in **Camera 1 index** (usually `0`)
-4. Click **▶ Start**
+### TensorRT (optional — for 60+ FPS)
 
-The system auto-downloads `yolo11n-seg.pt` (~6 MB) on first run. All detections are labelled **onion** until you load a trained model.
-
----
-
-## Adding Your Trained Model
-
-1. Train YOLO11s-seg on your onion dataset (class names must match those in `config.py`)
-2. Drop the `.pt` file anywhere on the machine
-3. Go to **⚙️ Settings** → paste the path → **💾 Save Settings**
-4. Click **🔄 Restart** in Live Demo — grading activates automatically
-
-No code changes needed. Class names load from the model weights.
-
----
-
-## GPU Acceleration
-
-The system runs on CPU by default. For GPU (NVIDIA):
+If you have CUDA and want maximum speed, export your model once:
 
 ```bash
-# Check your CUDA version
-nvidia-smi
-
-# Install matching PyTorch (replace cu128 with your version)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128 --force-reinstall
+python -c "
+from ultralytics import YOLO
+m = YOLO('models/testdataset/runs/runs/onion_v1-2/weights/best.pt')
+m.export(format='engine', batch=1, device=0, half=True, imgsz=640)
+"
 ```
 
-YOLO auto-detects and uses the GPU — no code changes needed.
+The dashboard and test script auto-detect the `.engine` file and use it.
 
 ---
 
-## Two-Camera Setup
+## Training Your Own Model
 
-| Mode | How |
+```bash
+# Place your Roboflow YOLOv11 dataset in models/testdataset/
+# Fix data.yaml to use absolute paths, then:
+
+yolo train \
+  model=yolo11s.pt \
+  data=models/testdataset/data.yaml \
+  epochs=100 \
+  batch=16 \
+  imgsz=640 \
+  device=0 \
+  project=models/testdataset/runs \
+  name=onion_v1
+```
+
+Best weights are saved to `models/testdataset/runs/onion_v1/weights/best.pt`.
+
+---
+
+## Detection Parameters (tuned values)
+
+| Parameter | Value | Notes |
+|---|---|---|
+| Confidence | 0.30 | Lower catches more onions; raise to 0.45+ if false positives appear |
+| IOU (NMS) | 0.45 | Overlap threshold for duplicate suppression |
+| Image size | 640×640 | All frames resized before inference |
+| Min box size | 10 px | Rejects tiny noise |
+| Max box size | 60% of frame | Rejects hands, people, large blobs |
+| Aspect ratio | 0.25–4.0 | Rejects elongated shapes (arms, conveyor rails) |
+
+---
+
+## Video Display Modes
+
+| Mode | FPS | How |
+|---|---|---|
+| **MJPEG** (primary) | ~20–25 FPS | Local HTTP server on port 5679 — browser `<img>` pulls frames; no Streamlit reruns, smooth playback |
+| **Standalone test** | native FPS | `test_detection.py` — `cv2.imshow()` window, no browser involved |
+
+> WebRTC via `streamlit-webrtc` is available as a fallback but is optimised for live camera sources, not MP4 files.
+
+---
+
+## Dashboard Tabs
+
+| Tab | Contents |
 |---|---|
-| Single camera (default) | Leave **Enable Camera 2** unchecked |
-| Two cameras, one laptop | Enable Camera 2, set index 1 |
-| Two cameras, two laptops | Use `main.py` — Camera 2 laptop runs `RemoteCameraProxy` (sends events over WiFi) |
-
-Camera 2 is completely optional. The pipeline degrades gracefully to single-camera mode.
+| **Live Detection** | Video feed, FPS, frame counter, onion count, Start/Stop/Restart/Reset controls, confidence/IOU sliders |
+| **Analytics** | Grade distribution bar chart, defect breakdown pie chart, recent detections table |
+| **Dispute Review** | Detections where cameras disagreed — shows both camera frames + Grad-CAM overlay |
+| **Configuration** | Model path, data.yaml path, overlap zones, belt speed, ejector delay, cross-camera matching |
 
 ---
 
-## Demo Scenarios for Judges
+## Two-Camera Setup (future)
 
-**Offline sync demo:**
-1. Start pipeline → let it grade a batch
-2. Disconnect WiFi → observe "Pending Sync" counter in sidebar increase
-3. Reconnect WiFi → `SyncWorker` daemon auto-posts pending rows and clears counter
+Currently single-camera mode is the primary focus. Multi-camera architecture is designed but not yet tested:
 
-**Source switch (no downtime):**
-1. Start on Camera → while running, switch radio to "Video File" → paste path
-2. Click **🔄 Restart** — feed switches in ~1 second, no manual Stop needed
+- One YOLO+ByteTrack tracker per camera (local IDs)
+- Overlap zone entry triggers Hungarian matching
+- Worst-case grading: `final_grade = max(severity(cam1), severity(cam2))`
 
-**Settings live-tuning:**
-1. Go to ⚙️ Settings → adjust Confidence slider → Save
-2. Pipeline picks up new threshold within 2 seconds (no restart)
+Enable Camera 2 in the dashboard sidebar when ready to test.
 
 ---
 
@@ -173,43 +199,21 @@ Camera 2 is completely optional. The pipeline degrades gracefully to single-came
 
 ```sql
 onion_grades (
-    global_id          INTEGER PRIMARY KEY,
-    cam1_grade         TEXT,
-    cam2_grade         TEXT,
-    final_grade        TEXT,    -- worst-case of cam1 + cam2
-    defect_type        TEXT,    -- specific defect class if present
+    global_id             INTEGER PRIMARY KEY,
+    cam1_grade            TEXT,
+    cam2_grade            TEXT,
+    final_grade           TEXT,
+    defect_type           TEXT,
     estimated_diameter_mm REAL,
-    cam1_confidence    REAL,
-    cam2_confidence    REAL,
-    mask_area_cam1     INTEGER,
-    mask_area_cam2     INTEGER,
-    ejected            INTEGER DEFAULT 0,
-    timestamp          REAL,
-    batch_id           TEXT,
-    farmer_name        TEXT,
-    centre_id          TEXT,
-    sync_status        TEXT DEFAULT 'pending'  -- 'pending' | 'synced'
+    cam1_confidence       REAL,
+    cam2_confidence       REAL,
+    ejected               INTEGER DEFAULT 0,
+    timestamp             REAL,
+    batch_id              TEXT,
+    farmer_name           TEXT,
+    sync_status           TEXT DEFAULT 'pending'
 )
 ```
-
----
-
-## Grade Classes
-
-| Grade | Severity | Description |
-|---|---|---|
-| `grade_a` | 0 | Premium — no defects |
-| `grade_b` | 1 | Minor surface issues |
-| `grade_c` | 2 | Visible defects, still marketable |
-| `sprouting` | 2 | Visible sprout growth |
-| `sunscald` | 2 | Sun-damaged outer skin |
-| `bruising` | 2 | Physical damage |
-| `thrips_damage` | 2 | Insect damage |
-| `neck_rot` | 3 | Fungal infection at neck |
-| `rot` | 3 | Active rot |
-| `reject` | 3 | Unmarketable — triggers ejector |
-
-Worst-case rule: if cam1 says `grade_a` and cam2 says `rot`, final grade is `rot`.
 
 ---
 
@@ -217,15 +221,20 @@ Worst-case rule: if cam1 says `grade_a` and cam2 says `rot`, final grade is `rot
 
 ```
 Python >= 3.10
-ultralytics >= 8.3.0   # YOLO11n-seg
+CUDA-capable GPU (RTX 4060 or better recommended for 30+ FPS)
+
+ultralytics >= 8.3.0    # YOLO11 inference
 torch >= 2.3.0
-opencv-python
-streamlit >= 1.36.0
-streamlit-elements == 0.1.*   # Material UI + Nivo charts
-pandas, plotly, requests
-reportlab                      # PDF certificates
-pytorch-grad-cam               # EigenCAM explainability
-pyserial                       # Real ejector (optional)
+opencv-python >= 4.10.0
+streamlit >= 1.37.0
+streamlit-webrtc >= 0.47.0   # WebRTC video streaming
+aiortc >= 1.9.0               # MP4 → WebRTC transport
+plotly >= 5.22.0
+pandas >= 2.2.0
+pyyaml >= 6.0                 # data.yaml parsing
+reportlab >= 4.2.0            # PDF certificates
+pytorch-grad-cam >= 1.5.0     # EigenCAM explainability
+pyserial >= 3.5               # Real ejector (optional)
 ```
 
 ---

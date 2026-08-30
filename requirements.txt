@@ -1,15 +1,34 @@
+# Core inference
 ultralytics>=8.3.0
 torch>=2.3.0
 torchvision>=0.18.0
 opencv-python>=4.10.0
 numpy>=1.26.0
 Pillow>=10.3.0
-pytorch-grad-cam>=1.5.0
-streamlit>=1.36.0
-streamlit-elements==0.1.*
+
+# Dashboard
+streamlit>=1.37.0
 plotly>=5.22.0
 pandas>=2.2.0
-requests>=2.32.0
+
+# Real-time video streaming (smooth 30 FPS in browser)
+streamlit-webrtc>=0.47.0
+aiortc>=1.9.0
+
+# Explainability
+pytorch-grad-cam>=1.5.0
+
+# Reports & certificates
 reportlab>=4.2.0
+
+# Hardware
 pyserial>=3.5
+
+# YAML parsing (data.yaml class names)
+pyyaml>=6.0
+
+# Utilities
+requests>=2.32.0
+
+# Dev / testing
 pytest>=8.2.0
