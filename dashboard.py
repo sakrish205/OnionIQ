@@ -486,7 +486,7 @@ def _start_mjpeg_server():
 
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            cam_key = "frame1" if self.path.startswith("/feed1") else "frame2"
+            cam_key = "frame1"
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=--iqframe")
