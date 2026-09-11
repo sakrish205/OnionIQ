@@ -1159,7 +1159,7 @@ with tab_analytics:
             df = pd.DataFrame(rows[:60])
             dcols = [c for c in [
                 "global_id", "final_grade", "defect_type",
-                "estimated_diameter_mm", "cam1_confidence", "timestamp",
+                "estimated_diameter_mm", "timestamp",
             ] if c in df.columns]
             df_disp = df[dcols].copy()
             df_disp.columns = [c.replace("_", " ").title() for c in dcols]
