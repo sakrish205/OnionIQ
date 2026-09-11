@@ -564,7 +564,7 @@ class _PipelineWorker(threading.Thread):
     """Inference backend — direct port of test_detection.py logic.
     Reader thread → frame_q(4) → inference (model.track) → MJPEG state."""
 
-    def __init__(self, source1, source2, settings, db, stop_event):
+    def __init__(self, source1, settings, db, stop_event):
         super().__init__(daemon=True, name="PipelineWorker")
         self._source1  = source1
         self._settings = settings
@@ -727,7 +727,7 @@ class _PipelineWorker(threading.Thread):
             _state["frame1"]  = None
 
 
-def _start_pipeline(s1, s2, settings, db):
+def _start_pipeline(s1, settings, db):
     with _lock:
         if _state.get("running"): return
         stop = threading.Event()
@@ -736,7 +736,7 @@ def _start_pipeline(s1, s2, settings, db):
             "loading": True, "loading_msg": "Loading model…",
             "source1": str(s1) if s1 else None,
         })
-        t = _PipelineWorker(s1, None, settings, db, stop)
+        t = _PipelineWorker(s1, settings, db, stop)
         _state["thread"] = t; t.start()
 
 
@@ -747,18 +747,17 @@ def _stop_pipeline():
         _state["error"] = None
 
 
-def _restart_pipeline(s1, s2, settings, db):
+def _restart_pipeline(s1, settings, db):
     with _lock:
         s = _state.get("stop_event")
         if s: s.set()
         old_thread = _state.get("thread")
         _state["running"] = False
         _state["frame1"]  = None
-        _state["frame2"]  = None
         _state["error"]   = None
     if old_thread and old_thread.is_alive():
         old_thread.join(timeout=2.0)
-    _start_pipeline(s1, s2, settings, db)
+    _start_pipeline(s1, settings, db)
 
 
 def _bar_chart(data: dict, title: str, t: dict) -> go.Figure:
@@ -847,7 +846,6 @@ if _cache_stale:
     st.session_state._db_cache_ts = _now
     st.session_state._db_summary  = db.get_batch_summary("DEMO")
     st.session_state._db_recent   = db.get_recent(n=200, batch_id="DEMO")
-    st.session_state._db_disputed = db.get_disputed(batch_id="DEMO")
 
 
 
@@ -896,8 +894,8 @@ if _strip_r.button(_lbl, key="theme_btn"):
     st.rerun()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_live, tab_analytics, tab_disputes, tab_settings = st.tabs([
-    "Live Detection", "Analytics & Reports", "Dispute Review", "Configuration",
+tab_live, tab_analytics, tab_settings = st.tabs([
+    "Live Detection", "Analytics & Reports", "Configuration",
 ])
 
 
@@ -960,8 +958,6 @@ with tab_live:
             if source1 and not Path(source1).exists():
                 st.warning("File not found.")
 
-        source2 = None  # multi-camera not yet active
-
         _s1 = str(source1).strip() if source1 else None
         if running and _state.get("source1") != _s1:
             st.warning("Source changed — click Restart to apply.")
@@ -975,7 +971,7 @@ with tab_live:
                          use_container_width=True, type="primary"):
                 s = load_settings()
                 s["_batch_id"] = "DEMO"
-                _start_pipeline(source1, source2, s, db); st.rerun()
+                _start_pipeline(source1, s, db); st.rerun()
         with b2:
             if st.button("Stop", disabled=not running, use_container_width=True):
                 _stop_pipeline(); st.rerun()
@@ -984,7 +980,7 @@ with tab_live:
                          help="Restart with current source settings"):
                 s = load_settings()
                 s["_batch_id"] = "DEMO"
-                _restart_pipeline(source1, source2, s, db); st.rerun()
+                _restart_pipeline(source1, s, db); st.rerun()
 
         if st.button("Reset Count", use_container_width=True,
                      disabled=not running,
@@ -1098,7 +1094,7 @@ with tab_live:
                 # on the frame itself. Changing the HTML string would reload the
                 # iframe on every Streamlit rerun, disconnecting the MJPEG stream.
                 st.components.v1.html(
-                    _video_html(_MJPEG_PORT, 1, "Camera 1", h=500),
+                    _video_html(_MJPEG_PORT, 1, "Camera Feed", h=500),
                     height=514,
                 )
             else:
@@ -1163,8 +1159,7 @@ with tab_analytics:
             df = pd.DataFrame(rows[:60])
             dcols = [c for c in [
                 "global_id", "final_grade", "defect_type",
-                "estimated_diameter_mm", "cam1_confidence",
-                "cam2_confidence", "timestamp",
+                "estimated_diameter_mm", "cam1_confidence", "timestamp",
             ] if c in df.columns]
             df_disp = df[dcols].copy()
             df_disp.columns = [c.replace("_", " ").title() for c in dcols]
@@ -1173,65 +1168,7 @@ with tab_analytics:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — Dispute Review
-# ══════════════════════════════════════════════════════════════════════════════
-with tab_disputes:
-    st.markdown(f"""
-    <div style="font-size:0.82rem;color:{T['text_muted']};margin-bottom:16px;
-                font-family:Inter,sans-serif">
-      Records where Camera 1 and Camera 2 assigned different grades to the same onion.
-      Final grade follows worst-case logic.
-    </div>
-    """, unsafe_allow_html=True)
-
-    disputed = st.session_state.get("_db_disputed", [])
-    if not disputed:
-        st.markdown(f"""
-        <div style="background:{T['success_bg']};border:1px solid {T['success_bdr']};
-                    border-left:3px solid {T['success']};border-radius:6px;
-                    padding:36px;text-align:center;
-                    box-shadow:0px 1px 2px 0px {T['elev_1']}">
-          <div style="font-weight:600;color:{T['success']};margin-bottom:4px;
-                      font-family:Inter,sans-serif">No disputes in this batch</div>
-          <div style="font-size:0.82rem;color:{T['text_muted']};font-family:Inter,sans-serif">
-            Both cameras agreed on grade for all processed onions.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.warning(f"{len(disputed)} disputed record(s)")
-        ids = [r["global_id"] for r in disputed]
-        sel = st.selectbox("Select Onion ID", ids, format_func=lambda x: f"Onion #{x}")
-        row = next((r for r in disputed if r["global_id"] == sel), None)
-        if row:
-            dc1, dc2, dc3 = st.columns(3)
-            dc1.metric("Camera 1", (row.get("cam1_grade") or "—").replace("_", " ").upper())
-            dc2.metric("Camera 2", (row.get("cam2_grade") or "—").replace("_", " ").upper())
-            dc3.metric("Final",    (row.get("final_grade") or "—").replace("_", " ").upper())
-            st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
-            ic1, ic2, ic3 = st.columns(3)
-            for col, key, label in zip(
-                [ic1, ic2, ic3],
-                ["cam1_path", "cam2_path", "overlay_path"],
-                ["Camera 1 Frame", "Camera 2 Frame", "Activation Map"],
-            ):
-                p = row.get(key)
-                if p and os.path.exists(p):
-                    col.image(cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB),
-                              caption=label, use_container_width=True)
-                else:
-                    col.markdown(f"""
-                    <div style="background:{T['card_bg']};border:1px dashed {T['border']};
-                                border-radius:6px;padding:28px;text-align:center;
-                                font-size:0.78rem;color:{T['text_muted']};
-                                font-family:Inter,sans-serif">
-                      {label}<br>Not available
-                    </div>
-                    """, unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — Configuration
+# TAB 3 — Configuration
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_settings:
     s = load_settings()
@@ -1284,13 +1221,6 @@ with tab_settings:
                 except Exception as ex:
                     st.error(f"Download failed: {ex}")
 
-    _section("Overlap Zone — Camera 1")
-    col_a, col_b = st.columns(2)
-    ov1s = col_a.slider("Start X (px)", 0, 1280, int(s.get("overlap_start_cam1_x", 900)),  10, key="ov1s")
-    ov1e = col_b.slider("End X (px)",   0, 1280, int(s.get("overlap_end_cam1_x",   1280)), 10, key="ov1e")
-    ov2s = int(s.get("overlap_start_cam2_x", 0))
-    ov2e = int(s.get("overlap_end_cam2_x",   380))
-
     _section("Belt & Ejector")
     col_e, col_f = st.columns(2)
     belt_spd = col_e.slider("Belt Speed (m/s)",     0.10, 1.0,
@@ -1303,13 +1233,6 @@ with tab_settings:
         value=bool(s.get("simulated_ejector", True)),
     )
 
-    with st.expander("Cross-Camera Matching (multi-cam — not yet active)"):
-        col_g, col_h = st.columns(2)
-        match_iou = col_g.slider("IoU Threshold",  0.10, 0.80,
-                                  float(s.get("cross_cam_iou_threshold", 0.30)), 0.05)
-        match_win = col_h.slider("Time Window (s)", 0.5, 10.0,
-                                  float(s.get("match_time_window_s",    2.0)),  0.5)
-
     _section("Size Estimation")
     cal = st.slider("Calibration Factor (mm/pixel)", 0.001, 0.10,
                     float(s.get("calibration_factor", 0.014)), 0.001, format="%.3f")
@@ -1319,15 +1242,12 @@ with tab_settings:
     sa, sb = st.columns(2)
     if sa.button("Save Configuration", use_container_width=True, type="primary"):
         save_settings({
-            "model_path":              model_path,
-            "data_yaml":               data_yaml,
-            "overlap_start_cam1_x":    ov1s, "overlap_end_cam1_x": ov1e,
-            "overlap_start_cam2_x":    ov2s, "overlap_end_cam2_x": ov2e,
-            "belt_speed_ms":           belt_spd, "ejector_distance_m": eject_d,
-            "simulated_ejector":       simulated,
-            "cross_cam_iou_threshold": match_iou,
-            "match_time_window_s":     match_win,
-            "calibration_factor":      cal,
+            "model_path":          model_path,
+            "data_yaml":           data_yaml,
+            "belt_speed_ms":       belt_spd,
+            "ejector_distance_m":  eject_d,
+            "simulated_ejector":   simulated,
+            "calibration_factor":  cal,
         })
         st.success("Configuration saved. Restart pipeline to apply changes.")
     if sb.button("Reset to Defaults", use_container_width=True):

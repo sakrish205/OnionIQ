@@ -50,7 +50,7 @@ Press `Q` to quit, `SPACE` to pause, `S` for slow-motion.
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                 Streamlit Dashboard                      │
-│  Live Detection │ Analytics │ Disputes │ Configuration   │
+│  Live Detection │ Analytics │ Configuration                │
 │                                                          │
 │  Video: MJPEG server (port 5679) — smooth, no reruns    │
 └────────────────────────┬────────────────────────────────┘
@@ -179,8 +179,7 @@ Best weights saved to `models/testdataset/runs/onion_v1/weights/best.pt`.
 | Tab | Contents |
 |---|---|
 | **Analytics** | Grade distribution bar chart, defect breakdown pie, recent detections table |
-| **Dispute Review** | Records where cam1 and cam2 disagreed — Grad-CAM overlay shown |
-| **Configuration** | Model path, data.yaml, overlap zone, belt speed, ejector delay, size calibration |
+| **Configuration** | Model path, data.yaml, belt speed, ejector delay, size calibration |
 
 ---
 
@@ -190,17 +189,6 @@ Best weights saved to `models/testdataset/runs/onion_v1/weights/best.pt`.
 |---|---|---|
 | **MJPEG** (active) | ~20–25 FPS | Local HTTP server port 5679; browser `<img>` streams frames directly — no Streamlit reruns, no flicker |
 | **Standalone** | native FPS | `test_detection.py` — `cv2.imshow()`, no browser |
-
----
-
-## Two-Camera Setup (future)
-
-Single-camera + video file is the current focus. Multi-camera architecture is implemented but not yet wired to the UI:
-
-- One YOLO+ByteTrack tracker per camera (local IDs)
-- Overlap zone entry triggers Hungarian algorithm ID handoff
-- Worst-case grading: `final_grade = max(severity(cam1), severity(cam2))`
-- Cross-camera settings are accessible under the **Configuration** tab expander
 
 ---
 
