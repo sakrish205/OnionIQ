@@ -5,12 +5,6 @@ Dashboard — UX4G official semantic tokens, elevation, and input spec.
 import os, queue, sys, threading, time
 from pathlib import Path
 
-try:
-    from streamlit_webrtc import webrtc_streamer, WebRtcMode, VideoProcessorBase
-    import av
-    _WEBRTC_OK = True
-except ImportError:
-    _WEBRTC_OK = False
 
 import cv2
 import numpy as np
@@ -1014,102 +1008,28 @@ with tab_live:
                 "Load a trained model in Configuration to enable grade classification."
             )
 
-        # ── WebRTC path (smoothest — if streamlit-webrtc installed) ──────────
-        if _WEBRTC_OK and source1 and not running:
-            # WebRTC streams MP4 through aiortc.MediaPlayer → VideoProcessor
-            # → browser at true 30 FPS without any MJPEG or Streamlit rerun.
-            from ultralytics import YOLO as _YOLO
-
-            _pt  = s_global.get("model_path", "")
-            _eng = Path(_pt).with_suffix(".engine") if _pt else None
-            _mdl_path = str(_eng) if (_eng and _eng.exists()) \
-                        else (_pt if _pt and Path(_pt).exists() else "yolo11n-seg.pt")
-            _wconf = float(s_global.get("confidence_threshold", 0.30))
-            _wiou  = float(s_global.get("iou_threshold", 0.45))
-
-            @st.cache_resource
-            def _load_webrtc_model(path):
-                return _YOLO(path)
-
-            _wmodel = _load_webrtc_model(_mdl_path)
-
-            class _OnionProcessor(VideoProcessorBase):
-                def recv(self, frame: "av.VideoFrame") -> "av.VideoFrame":
-                    img = frame.to_ndarray(format="bgr24")
-                    img = cv2.resize(img, (640, 640))
-                    try:
-                        results = _wmodel.track(
-                            img, conf=_wconf, iou=_wiou, imgsz=640,
-                            persist=True, tracker="bytetrack.yaml", verbose=False,
-                        )
-                    except Exception:
-                        results = _wmodel.predict(img, conf=_wconf, iou=_wiou,
-                                                  imgsz=640, verbose=False)
-                    boxes = results[0].boxes
-                    if boxes is not None and len(boxes.xyxy) > 0:
-                        tids = None
-                        if hasattr(boxes, "id") and boxes.id is not None:
-                            try: tids = [int(boxes.id[i].item()) for i in range(len(boxes.id))]
-                            except Exception: pass
-                        for i, xyxy in enumerate(boxes.xyxy):
-                            x1,y1,x2,y2 = [int(v) for v in xyxy]
-                            if not _keep_box(x1, y1, x2, y2, 640): continue
-                            tid = tids[i] if tids and i<len(tids) else -1
-                            cf  = float(boxes.conf[i])
-                            cv2.rectangle(img,(x1,y1),(x2,y2),(0,200,60),2)
-                            lbl = f"#{tid} {cf:.0%}"
-                            (tw,th),_ = cv2.getTextSize(lbl,cv2.FONT_HERSHEY_SIMPLEX,0.5,1)
-                            cv2.rectangle(img,(x1,y1-th-8),(x1+tw+4,y1),(0,200,60),-1)
-                            cv2.putText(img,lbl,(x1+2,y1-4),
-                                        cv2.FONT_HERSHEY_SIMPLEX,0.5,(255,255,255),1)
-                    return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-            try:
-                from aiortc.contrib.media import MediaPlayer as _MediaPlayer
-                _src1 = str(source1)
-
-                def _player_factory():
-                    return _MediaPlayer(_src1)
-
-                webrtc_streamer(
-                    key=f"onion-{Path(_src1).name}",
-                    mode=WebRtcMode.RECVONLY,
-                    player_factory=_player_factory,
-                    video_processor_factory=_OnionProcessor,
-                    media_stream_constraints={"video": True, "audio": False},
-                    async_processing=True,
-                )
-            except Exception as _we:
-                st.warning(f"WebRTC unavailable ({_we}) — using MJPEG fallback.")
-                _WEBRTC_OK_LOCAL = False
-            else:
-                _WEBRTC_OK_LOCAL = True
+        # ── MJPEG stream ──────────────────────────────────────────────────────
+        if running or _state.get("frame1") is not None:
+            # Label is static — dynamic FPS/frame info is drawn by cv2.putText
+            # on the frame itself. Changing the HTML string would reload the
+            # iframe on every Streamlit rerun, disconnecting the MJPEG stream.
+            st.components.v1.html(
+                _video_html(_MJPEG_PORT, 1, "Camera Feed", h=500),
+                height=514,
+            )
         else:
-            _WEBRTC_OK_LOCAL = False
-
-        # ── MJPEG fallback (pipeline running or webrtc not available) ─────────
-        if not _WEBRTC_OK or _WEBRTC_OK_LOCAL is False or running:
-            if running or _state.get("frame1") is not None:
-                # Label is static — dynamic FPS/frame info is drawn by cv2.putText
-                # on the frame itself. Changing the HTML string would reload the
-                # iframe on every Streamlit rerun, disconnecting the MJPEG stream.
-                st.components.v1.html(
-                    _video_html(_MJPEG_PORT, 1, "Camera Feed", h=500),
-                    height=514,
-                )
-            else:
-                st.markdown(f"""
-                <div style="background:{T['card_bg']};border:1px dashed {T['border']};
-                            border-radius:6px;padding:60px 40px;text-align:center;
-                            box-shadow:0px 1px 2px 0px {T['elev_1']}">
-                  <div style="font-weight:600;color:{T['text']};margin-bottom:6px;
-                              font-family:Inter,sans-serif">Camera feed not active</div>
-                  <div style="font-size:0.82rem;color:{T['text_muted']};font-family:Inter,sans-serif">
-                    Select a video file or camera index, then click
-                    <strong>Start</strong>.
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style="background:{T['card_bg']};border:1px dashed {T['border']};
+                        border-radius:6px;padding:60px 40px;text-align:center;
+                        box-shadow:0px 1px 2px 0px {T['elev_1']}">
+              <div style="font-weight:600;color:{T['text']};margin-bottom:6px;
+                          font-family:Inter,sans-serif">Camera feed not active</div>
+              <div style="font-size:0.82rem;color:{T['text_muted']};font-family:Inter,sans-serif">
+                Select a video file or camera index, then click
+                <strong>Start</strong>.
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
