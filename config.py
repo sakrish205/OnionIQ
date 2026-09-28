@@ -6,7 +6,7 @@ PROJECT_DIR   = Path(__file__).parent
 SETTINGS_FILE = PROJECT_DIR / "settings.json"
 DB_PATH       = str(PROJECT_DIR / "onioniq.db")
 
-CONFIDENCE_THRESHOLD = 0.15   # low = detect as many onions as possible
+CONFIDENCE_THRESHOLD = 0.50
 IOU_THRESHOLD        = 0.45
 IMAGE_SIZE           = 640
 BELT_SPEED_MS        = 0.25   # m/s — typical slow sorting conveyor

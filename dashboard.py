@@ -611,7 +611,7 @@ class _PipelineWorker(threading.Thread):
             return
 
         IMGSZ = 640
-        CONF  = float(self._settings.get("confidence_threshold", 0.15))
+        CONF  = float(self._settings.get("confidence_threshold", 0.50))
         IOU   = float(self._settings.get("iou_threshold", 0.45))
         _pt   = self._settings.get("model_path", "")
         _eng  = Path(_pt).with_suffix(".engine") if _pt else None
@@ -930,6 +930,15 @@ def get_db(): return OnionDatabase(DB_PATH)
 db          = get_db()
 s_global    = load_settings()
 running     = _state.get("running", False)
+
+# Auto-start pipeline when page first loads after splash
+if st.session_state._splash_done and not running and not st.session_state.get("_autostarted"):
+    st.session_state._autostarted = True
+    _auto_s = dict(s_global)
+    _auto_s["confidence_threshold"] = 0.50
+    _auto_s["_batch_id"] = "DEMO"
+    _auto_src = st.session_state.get("video_path", "") or "0"
+    _start_pipeline(_auto_src, _auto_s, db)
 _cp         = s_global.get("model_path", "")
 _has_custom = bool(_cp) and Path(_cp).exists()
 
