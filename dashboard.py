@@ -937,7 +937,7 @@ if st.session_state._splash_done and not running and not st.session_state.get("_
     _auto_s = dict(s_global)
     _auto_s["confidence_threshold"] = 0.50
     _auto_s["_batch_id"] = "DEMO"
-    _auto_src = st.session_state.get("video_path", "") or "0"
+    _auto_src = st.session_state.get("video_path", "") or r"C:\Users\sakee\Desktop\projects\onion\videos\onion4.mp4"
     _start_pipeline(_auto_src, _auto_s, db)
 _cp         = s_global.get("model_path", "")
 _has_custom = bool(_cp) and Path(_cp).exists()
