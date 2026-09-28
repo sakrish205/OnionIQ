@@ -773,7 +773,10 @@ def _restart_pipeline(s1, settings, db):
         _state["frame1"]  = None
         _state["error"]   = None
     if old_thread and old_thread.is_alive():
-        old_thread.join(timeout=2.0)
+        try:
+            old_thread.join(timeout=2.0)
+        except Exception:
+            pass
     _start_pipeline(s1, settings, db)
 
 
@@ -1060,6 +1063,10 @@ with tab_live:
 
         if _state.get("error"):
             st.error(f"Pipeline error: {_state['error']}")
+
+        # Prompt to export when video finishes
+        if not running and _state.get("session_count", 0) > 0:
+            st.success("Video finished — go to **Analytics & Reports** to download CSV / Certificate.")
 
         _section("Detection Parameters")
         conf    = st.slider("Confidence", 0.10, 0.95,
