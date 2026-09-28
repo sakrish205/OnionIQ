@@ -587,7 +587,7 @@ class _PipelineWorker(threading.Thread):
             return
 
         IMGSZ = 640
-        CONF  = float(self._settings.get("confidence_threshold", 0.30))
+        CONF  = float(self._settings.get("confidence_threshold", 0.50))
         IOU   = float(self._settings.get("iou_threshold", 0.45))
         _pt   = self._settings.get("model_path", "")
         _eng  = Path(_pt).with_suffix(".engine") if _pt else None
@@ -617,7 +617,7 @@ class _PipelineWorker(threading.Thread):
                 _state["running"] = False
             return
 
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total_frames = max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
         with _lock:
             _state["total_frames"] = total_frames
             _state["frame_count"]  = 0
@@ -644,7 +644,9 @@ class _PipelineWorker(threading.Thread):
         threading.Thread(target=_reader, daemon=True, name="Reader").start()
 
         # ── inference loop ────────────────────────────────────────────────────
+        import math as _math
         fc = 0; unique_ids = set(); t0 = time.time(); errors = 0
+        CAL = float(self._settings.get("calibration_factor", 0.60))
 
         while not self._stop.is_set():
             # Video loop reset (end of file)
@@ -652,7 +654,9 @@ class _PipelineWorker(threading.Thread):
                 fc = 0; unique_ids = set(); t0 = time.time(); errors = 0
                 reset_flag.clear()
             # Manual reset from UI button
-            if _state.get("reset_requested"):
+            with _lock:
+                _reset = _state.get("reset_requested", False)
+            if _reset:
                 fc = 0; unique_ids = set(); t0 = time.time(); errors = 0
                 with _lock: _state["reset_requested"] = False; _state["session_count"] = 0
 
@@ -691,7 +695,26 @@ class _PipelineWorker(threading.Thread):
                     if not _keep_box(x1, y1, x2, y2, IMGSZ): continue
                     tid      = track_ids[i] if track_ids and i < len(track_ids) else -1
                     conf_val = float(boxes.conf[i])
-                    if tid > 0: unique_ids.add(tid)
+                    # Write new tracks to DB so Analytics populates
+                    if tid > 0 and tid not in unique_ids:
+                        unique_ids.add(tid)
+                        _side_px = ((x2 - x1) + (y2 - y1)) / 2
+                        _diam_mm = round(_side_px * _math.sqrt(CAL), 1)
+                        try:
+                            self._db.insert_grade({
+                                "global_id":             tid,
+                                "final_grade":           "detected",
+                                "defect_type":           None,
+                                "estimated_diameter_mm": _diam_mm,
+                                "cam1_confidence":       round(conf_val, 3),
+                                "ejected":               0,
+                                "timestamp":             time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                "batch_id":              self._batch_id,
+                            })
+                        except Exception:
+                            pass
+                    elif tid > 0:
+                        unique_ids.add(tid)
                     # Green box — same as test_detection.py
                     cv2.rectangle(out, (x1, y1), (x2, y2), (0, 200, 60), 2)
                     lbl = f"#{tid} {conf_val:.0%}"
