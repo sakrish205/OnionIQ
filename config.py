@@ -6,12 +6,12 @@ PROJECT_DIR   = Path(__file__).parent
 SETTINGS_FILE = PROJECT_DIR / "settings.json"
 DB_PATH       = str(PROJECT_DIR / "onioniq.db")
 
-CONFIDENCE_THRESHOLD = 0.45
+CONFIDENCE_THRESHOLD = 0.50   # higher = fewer false positives on belt
 IOU_THRESHOLD        = 0.45
 IMAGE_SIZE           = 640
-BELT_SPEED_MS        = 0.3
-EJECTOR_DISTANCE_M   = 0.45
-CALIBRATION_FACTOR   = 0.014
+BELT_SPEED_MS        = 0.25   # m/s — typical slow sorting conveyor
+EJECTOR_DISTANCE_M   = 0.40   # m — distance from camera centre to ejector
+CALIBRATION_FACTOR   = 0.60   # mm²/pixel — camera ~800mm above 640mm-wide belt
 
 _DEFAULTS = {
     "model_path":          str(PROJECT_DIR / "models" / "yolo11s-seg.pt"),
