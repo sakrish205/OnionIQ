@@ -455,6 +455,11 @@ def _get_state():
 _lock  = _get_lock()
 _state = _get_state()
 
+@st.cache_resource
+def _load_model(path: str):
+    from ultralytics import YOLO as _YOLO
+    return _YOLO(path)
+
 
 # ── MJPEG stream server — bypasses Streamlit rerun for smooth video ───────────
 @st.cache_resource
@@ -587,7 +592,7 @@ class _PipelineWorker(threading.Thread):
             return
 
         IMGSZ = 640
-        CONF  = float(self._settings.get("confidence_threshold", 0.50))
+        CONF  = float(self._settings.get("confidence_threshold", 0.15))
         IOU   = float(self._settings.get("iou_threshold", 0.45))
         _pt   = self._settings.get("model_path", "")
         _eng  = Path(_pt).with_suffix(".engine") if _pt else None
@@ -596,7 +601,7 @@ class _PipelineWorker(threading.Thread):
 
         with _lock:
             _state["loading_msg"] = f"Loading {Path(mdl).name}…"
-        model = YOLO(mdl)
+        model = _load_model(mdl)   # cached — only loads once per process
         with _lock:
             _state["loading"] = False; _state["loading_msg"] = ""
 

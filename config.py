@@ -6,7 +6,7 @@ PROJECT_DIR   = Path(__file__).parent
 SETTINGS_FILE = PROJECT_DIR / "settings.json"
 DB_PATH       = str(PROJECT_DIR / "onioniq.db")
 
-CONFIDENCE_THRESHOLD = 0.50   # higher = fewer false positives on belt
+CONFIDENCE_THRESHOLD = 0.15   # low = detect as many onions as possible
 IOU_THRESHOLD        = 0.45
 IMAGE_SIZE           = 640
 BELT_SPEED_MS        = 0.25   # m/s — typical slow sorting conveyor
@@ -16,7 +16,7 @@ CALIBRATION_FACTOR   = 0.60   # mm²/pixel — camera ~800mm above 640mm-wide be
 _DEFAULTS = {
     "model_path":          str(PROJECT_DIR / "models" / "yolo11s-seg.pt"),
     "data_yaml":           "",
-    "confidence_threshold": CONFIDENCE_THRESHOLD,
+    "confidence_threshold": CONFIDENCE_THRESHOLD,  # 0.15 — max detections
     "iou_threshold":       IOU_THRESHOLD,
     "image_size":          IMAGE_SIZE,
     "belt_speed_ms":       BELT_SPEED_MS,
