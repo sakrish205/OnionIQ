@@ -812,6 +812,7 @@ st.set_page_config(
 _defaults = {
     "theme": "light",
     "video_path": "", "source_type": "Video File",
+    "_splash_done": False,
 }
 for k, v in _defaults.items():
     if k not in st.session_state:
@@ -819,6 +820,58 @@ for k, v in _defaults.items():
 
 T = THEMES[st.session_state.theme]
 st.markdown(_css(T), unsafe_allow_html=True)
+
+# ── Splash screen (first load only) ───────────────────────────────────────────
+if not st.session_state._splash_done:
+    st.markdown(f"""
+    <style>
+    #splash {{
+        position:fixed;inset:0;z-index:9999;
+        background:linear-gradient(135deg,#0a1628 0%,#0d2137 50%,#0a1628 100%);
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+        animation:fadeOut 0.6s ease 2.6s forwards;
+    }}
+    @keyframes fadeOut {{to{{opacity:0;pointer-events:none}}}}
+    .sp-logo {{
+        font-size:4.5rem;font-weight:900;letter-spacing:-2px;
+        font-family:Inter,sans-serif;color:#ffffff;margin-bottom:4px;
+        animation:rise 0.7s cubic-bezier(.22,1,.36,1) both;
+    }}
+    .sp-logo span{{color:#22c55e}}
+    .sp-sub {{
+        font-size:1.05rem;color:#94a3b8;font-family:Inter,sans-serif;
+        letter-spacing:2px;text-transform:uppercase;margin-bottom:32px;
+        animation:rise 0.7s 0.15s cubic-bezier(.22,1,.36,1) both;
+    }}
+    .sp-badge {{
+        background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.35);
+        color:#22c55e;font-size:0.78rem;font-family:Inter,sans-serif;
+        padding:6px 18px;border-radius:20px;letter-spacing:1.5px;
+        text-transform:uppercase;margin-bottom:40px;
+        animation:rise 0.7s 0.25s cubic-bezier(.22,1,.36,1) both;
+    }}
+    .sp-bar-wrap {{
+        width:220px;height:3px;background:rgba(255,255,255,0.1);
+        border-radius:2px;overflow:hidden;
+        animation:rise 0.5s 0.4s both;
+    }}
+    .sp-bar {{
+        height:100%;background:linear-gradient(90deg,#22c55e,#16a34a);
+        border-radius:2px;animation:load 2s 0.5s ease-out forwards;width:0%;
+    }}
+    @keyframes load {{to{{width:100%}}}}
+    @keyframes rise {{from{{opacity:0;transform:translateY(18px)}}to{{opacity:1;transform:none}}}}
+    </style>
+    <div id="splash">
+      <div class="sp-logo">Onion<span>IQ</span></div>
+      <div class="sp-sub">AI Onion Grading System</div>
+      <div class="sp-badge">SIH 2026 · Problem SIH26031</div>
+      <div class="sp-bar-wrap"><div class="sp-bar"></div></div>
+    </div>
+    """, unsafe_allow_html=True)
+    time.sleep(3.0)
+    st.session_state._splash_done = True
+    st.rerun()
 
 
 @st.cache_resource
