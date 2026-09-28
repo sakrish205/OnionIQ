@@ -460,6 +460,25 @@ def _load_model(path: str):
     from ultralytics import YOLO as _YOLO
     return _YOLO(path)
 
+@st.cache_resource
+def _prewarm_model():
+    """Load model at Streamlit startup so first Start click is instant."""
+    import threading as _t
+    from config import load_settings as _ls
+    from pathlib import Path as _P
+    def _bg():
+        try:
+            s = _ls()
+            mp = s.get("model_path", "")
+            mdl = mp if mp and _P(mp).exists() else "yolo11n-seg.pt"
+            _load_model(mdl)
+        except Exception:
+            pass
+    _t.Thread(target=_bg, daemon=True, name="ModelPrewarm").start()
+    return True
+
+_prewarm_model()
+
 
 # ── MJPEG stream server — bypasses Streamlit rerun for smooth video ───────────
 @st.cache_resource
